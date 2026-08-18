@@ -1,5 +1,5 @@
 # Claude Usage Monitor — TrafficMonitor 插件
-<img width="156" height="57" alt="image" src="https://github.com/user-attachments/assets/1286733b-767e-450a-a473-92120f3a329a" />
+![](https://github.com/littleji/claude-usage-monitor/blob/main/example.png)
 
 
 
