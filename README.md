@@ -1,4 +1,7 @@
 # Claude Usage Monitor — TrafficMonitor 插件
+<img width="156" height="57" alt="image" src="https://github.com/user-attachments/assets/1286733b-767e-450a-a473-92120f3a329a" />
+
+
 
 在 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) 的主窗口/任务栏上显示
 Claude 的额度用量与距离窗口重置的剩余时间：
