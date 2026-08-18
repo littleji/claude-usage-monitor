@@ -197,7 +197,14 @@ five_hour_format={pct}% →{reset_at}    ; 5h 21% →19:42    显示绝对重置
 .\build.ps1 -Arch x86                # 32 位
 .\build.ps1 -Config Debug            # 带调试信息
 .\build.ps1 -Install <plugins 目录>  # 构建后直接安装
+.\build.ps1 -Arch all -Zip           # x64 + x86 各出一个发布用的 zip
 ```
+
+`-Zip` 会把 DLL 单独打包成 `build\ClaudeUsageMonitor-<版本>-<架构>.zip`
+（版本号取自 `ClaudeUsagePlugin.cpp` 里的 `TMI_VERSION`），压缩包里只有
+`ClaudeUsageMonitor.dll` 一个文件，解压直接扔进 `plugins` 目录就能用，
+方便原封不动传到 GitHub Release。配合 `-Arch all` 一次构建两个架构，
+分别产出两个 zip；`-Install` 则要求单一架构，不能跟 `-Arch all` 同用。
 
 产物：
 

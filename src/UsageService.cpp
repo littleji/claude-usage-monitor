@@ -15,6 +15,24 @@ const int kMaxRefreshInterval = 3600;
 const int kFirstRetryDelay = 30;
 const int kMaxRetryDelay = 600;
 
+/** 读取上次请求的时间戳（可能来自上一个进程）；没有记录时返回 0 */
+time_t ReadLastFetchAt(const std::wstring& config_path)
+{
+    wchar_t buffer[32]{};
+    const DWORD length = ::GetPrivateProfileStringW(L"general", L"last_fetch_at", L"0",
+                                                     buffer, ARRAYSIZE(buffer), config_path.c_str());
+    if (length == 0)
+        return 0;
+    return static_cast<time_t>(::_wtoi64(buffer));
+}
+
+void WriteLastFetchAt(const std::wstring& config_path, time_t value)
+{
+    wchar_t buffer[32]{};
+    _snwprintf_s(buffer, _TRUNCATE, L"%lld", static_cast<long long>(value));
+    ::WritePrivateProfileStringW(L"general", L"last_fetch_at", buffer, config_path.c_str());
+}
+
 }   // namespace
 
 Service::Service()
@@ -137,9 +155,33 @@ void Service::Run()
     HANDLE wait_handles[2] = { m_stop_event, m_refresh_event };
     int retry_delay = kFirstRetryDelay;
 
+    // 上一次请求可能发生在上一个进程里——频繁重启 TrafficMonitor，或者调试时反复跑
+    // HostTest/Probe，都会让新进程一启动就立刻再发一次请求，几秒内就能连续撞上
+    // HTTP 429。这里只在启动时补一次这个等待，把请求间隔的下限（kMinRefreshInterval）
+    // 也套用到"进程刚启动"这个时刻上；跑起来之后的节奏仍由下面的 interval/退避控制。
+    if (!m_config_path.empty())
+    {
+        const time_t last_fetch_at = ReadLastFetchAt(m_config_path);
+        if (last_fetch_at > 0)
+        {
+            const time_t now = ::time(nullptr);
+            const int elapsed = static_cast<int>(std::max<time_t>(0, now - last_fetch_at));
+            const int wait_needed = kMinRefreshInterval - elapsed;
+            if (wait_needed > 0)
+            {
+                const DWORD waited = ::WaitForSingleObject(m_stop_event,
+                                                            static_cast<DWORD>(wait_needed) * 1000);
+                if (waited == WAIT_OBJECT_0)
+                    return;   // 等待期间收到停止信号，直接退出
+            }
+        }
+    }
+
     for (;;)
     {
         const int retry_after = FetchOnce();
+        if (!m_config_path.empty())
+            WriteLastFetchAt(m_config_path, ::time(nullptr));
 
         const int interval = GetRefreshInterval();
         int delay_seconds = interval;

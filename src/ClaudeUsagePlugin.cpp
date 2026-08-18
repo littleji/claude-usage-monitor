@@ -397,13 +397,14 @@ const wchar_t* CClaudeUsagePlugin::GetInfo(PluginInfoIndex index)
                     L"Shows Claude 5-hour / 7-day usage and time until reset. "
                     L"Reads Claude Code's local credentials, the same way cship does.");
     case TMI_AUTHOR:
-        return L"claude-usage-monitor";
+        return L"littleji";
     case TMI_COPYRIGHT:
         return L"MIT License";
     case TMI_VERSION:
-        return L"1.1.0";
+        return L"0.1.0";
     case TMI_URL:
-        return L"https://github.com/stephenleo/cship";
+        // 本项目的仓库地址。cship 只是取数方式的参考，它的地址写在 UsageApi.h 的注释里
+        return L"https://github.com/littleji/claude-usage-monitor";
     default:
         return L"";
     }
