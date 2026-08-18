@@ -1,5 +1,6 @@
 # Claude Usage Monitor — TrafficMonitor 插件
-<img width="734" height="48" alt="image" src="https://github.com/user-attachments/assets/8d01d248-d057-4382-a8f2-7b910057dd03" />
+<img width="156" height="57" alt="image" src="https://github.com/user-attachments/assets/1286733b-767e-450a-a473-92120f3a329a" />
+
 
 
 在 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) 的主窗口/任务栏上显示
