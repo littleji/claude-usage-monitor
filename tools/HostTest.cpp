@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -263,13 +264,168 @@ int wmain(int argc, wchar_t* argv[])
     plugin->OnExtenedInfo(ITMPlugin::EI_CONFIG_DIR, app.m_config_dir.c_str());
     plugin->OnInitialize(&app);
 
-    IPluginItem* item0 = plugin->GetItem(0);
-    IPluginItem* item1 = plugin->GetItem(1);
+    IPluginItem* item_terminals = plugin->GetItem(0);
+    IPluginItem* item0 = plugin->GetItem(1);
+    IPluginItem* item1 = plugin->GetItem(2);
+    ExerciseItem(item_terminals, L"终端状态");
     ExerciseItem(item0, L"0");
     ExerciseItem(item1, L"1");
 
+    // 终端状态项的自绘：没有终端时先验证不崩溃、显示占位文字，
+    // 然后造几个假状态文件，验证圆点确实按状态画出了不同颜色——
+    // 而不是黑白的彩色 emoji 字形（GDI 画文字不认字体自带的调色板）。
+    if (item_terminals != nullptr && item_terminals->IsCustomDraw())
+    {
+        {
+            HDC screen = ::GetDC(nullptr);
+            HDC mem = ::CreateCompatibleDC(screen);
+            HBITMAP bitmap = ::CreateCompatibleBitmap(screen, 200, 24);
+            HGDIOBJ old_bitmap = ::SelectObject(mem, bitmap);
+
+            const int width = item_terminals->GetItemWidthEx(mem);
+            Line(L"    终端状态（无终端）GetItemWidthEx = " + std::to_wstring(width) + L" px");
+            Check(width >= 0, L"终端状态（无终端）自绘宽度非负");
+            Check(item_terminals->GetItemWidthEx(nullptr) == 0,
+                  L"终端状态 hDC 为空时返回 0（让主程序回退）");
+
+            ::SetTextColor(mem, RGB(255, 255, 255));
+            item_terminals->DrawItem(mem, 0, 0, 200, 24, true);   // 只要不崩溃即可
+            Line(L"    终端状态（无终端）DrawItem 未崩溃");
+
+            ::SelectObject(mem, old_bitmap);
+            ::DeleteObject(bitmap);
+            ::DeleteDC(mem);
+            ::ReleaseDC(nullptr, screen);
+        }
+
+        const std::wstring status_config_dir = MakeTempConfigDir() + L"Terminals";
+        const std::wstring status_dir = status_config_dir + L"\\status";
+        ::CreateDirectoryW(status_config_dir.c_str(), nullptr);
+        ::CreateDirectoryW(status_dir.c_str(), nullptr);
+
+        auto write_status = [&](const wchar_t* file_name, const char* json)
+        {
+            const std::wstring path = status_dir + L"\\" + file_name;
+            HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f == INVALID_HANDLE_VALUE)
+                return;
+            DWORD written = 0;
+            ::WriteFile(f, json, static_cast<DWORD>(::strlen(json)), &written, nullptr);
+            ::CloseHandle(f);
+        };
+        // updated_at 故意写在很远的未来，避免被当成过期的死会话剔除
+        write_status(L"a.json",
+            "{\"session_id\":\"aaaaaaaa\",\"status\":\"thinking\",\"updated_at\":9999999999}");
+        write_status(L"b.json",
+            "{\"session_id\":\"bbbbbbbb\",\"status\":\"done\",\"updated_at\":9999999999}");
+        write_status(L"c.json",
+            "{\"session_id\":\"cccccccc\",\"status\":\"error\",\"updated_at\":9999999999,"
+            "\"error_type\":\"rate_limit\"}");
+        // d：带真实存活的 pid（本进程自己），应该被计入
+        {
+            char json[256]{};
+            _snprintf_s(json, _TRUNCATE,
+                "{\"session_id\":\"dddddddd\",\"status\":\"waiting\",\"updated_at\":9999999999,"
+                "\"pid\":%lu}", ::GetCurrentProcessId());
+            write_status(L"d.json", json);
+        }
+        // d2：和 d 同一个 pid（模拟同一个终端进程内部产生的额外 session_id），
+        // 但 updated_at 更早——应该被 pid 去重顶掉，文件被删，不重复计入圆点
+        {
+            char json[256]{};
+            _snprintf_s(json, _TRUNCATE,
+                "{\"session_id\":\"dddddd02\",\"status\":\"thinking\",\"updated_at\":9999999998,"
+                "\"pid\":%lu}", ::GetCurrentProcessId());
+            write_status(L"d2.json", json);
+        }
+        const std::wstring superseded_pid_file = status_dir + L"\\d2.json";
+        // h/h2：同一个 pid（用 4 号"System"进程，Windows 上永远存在），
+        // h 有 cwd 但 updated_at 更早，h2 没有 cwd 但 updated_at 更晚——
+        // 应该是 h 赢（有 cwd 优先），不能简单比谁更新，否则真会话会被顶掉
+        write_status(L"h.json",
+            "{\"session_id\":\"hhhhhhhh\",\"status\":\"waiting\",\"updated_at\":9999999000,"
+            "\"pid\":4,\"cwd\":\"D:\\\\real\\\\project\"}");
+        write_status(L"h2.json",
+            "{\"session_id\":\"h2222222\",\"status\":\"thinking\",\"updated_at\":9999999999,"
+            "\"pid\":4}");
+        const std::wstring keep_cwd_file = status_dir + L"\\h.json";
+        const std::wstring lose_no_cwd_file = status_dir + L"\\h2.json";
+        // e：带一个不可能存在的 pid，模拟终端已经被关掉/强杀——
+        // 应该被排除在外，而且文件本身要被插件删掉（不用等 updated_at 超时）
+        write_status(L"e.json",
+            "{\"session_id\":\"eeeeeeee\",\"status\":\"idle\",\"updated_at\":9999999999,"
+            "\"pid\":2147483647}");
+        const std::wstring dead_pid_file = status_dir + L"\\e.json";
+        Check(::GetFileAttributesW(dead_pid_file.c_str()) != INVALID_FILE_ATTRIBUTES,
+              L"死 pid 的状态文件在扫描前确实存在");
+
+        ::SetEnvironmentVariableW(L"CLAUDE_CONFIG_DIR", status_config_dir.c_str());
+        plugin->DataRequired();   // 第一次调用必定真正扫描（内部节流的计时器还没启动过）
+        ::SetEnvironmentVariableW(L"CLAUDE_CONFIG_DIR", nullptr);
+
+        Check(::GetFileAttributesW(dead_pid_file.c_str()) == INVALID_FILE_ATTRIBUTES,
+              L"死 pid 的状态文件扫描后被删掉了（终端一关图标马上消失，不等超时）");
+        Check(::GetFileAttributesW(superseded_pid_file.c_str()) == INVALID_FILE_ATTRIBUTES,
+              L"同 pid 里更旧的那条被去重顶掉、文件也被删了（不会把同一个终端数成两个）");
+        Check(::GetFileAttributesW(keep_cwd_file.c_str()) != INVALID_FILE_ATTRIBUTES,
+              L"有 cwd 的那条被保留了，即使它 updated_at 更早（不会把真会话顶掉）");
+        Check(::GetFileAttributesW(lose_no_cwd_file.c_str()) == INVALID_FILE_ATTRIBUTES,
+              L"没有 cwd 但 updated_at 更晚的那条被顶掉了（cwd 优先级比时间高）");
+
+        Line(std::wstring(L"    终端状态（8 个假文件，应剩 5 个：1 死 pid、2 组同 pid 去重）"
+                          L"GetItemValueText = ") +
+             Safe(item_terminals->GetItemValueText()));
+
+        HDC screen = ::GetDC(nullptr);
+        HDC mem = ::CreateCompatibleDC(screen);
+        const int width = item_terminals->GetItemWidthEx(mem);
+        Line(L"    终端状态（3 个假终端）GetItemWidthEx = " + std::to_wstring(width) + L" px");
+        Check(width > 0, L"终端状态（有终端时）自绘宽度大于 0");
+
+        const int canvas_w = width + 8;
+        const int height = 24;
+        HBITMAP bitmap = ::CreateCompatibleBitmap(screen, canvas_w, height);
+        HGDIOBJ old_bitmap = ::SelectObject(mem, bitmap);
+
+        const COLORREF kBackground = RGB(255, 0, 255);
+        RECT all{ 0, 0, canvas_w, height };
+        HBRUSH bg = ::CreateSolidBrush(kBackground);
+        ::FillRect(mem, &all, bg);
+        ::DeleteObject(bg);
+
+        ::SetTextColor(mem, RGB(255, 255, 255));
+        item_terminals->DrawItem(mem, 0, 0, canvas_w, height, true);
+
+        auto count_color = [&](COLORREF target)
+        {
+            int count = 0;
+            for (int py = 0; py < height; ++py)
+                for (int px = 0; px < canvas_w; ++px)
+                    if (::GetPixel(mem, px, py) == target)
+                        ++count;
+            return count;
+        };
+        // 默认配色：thinking 用可配置的 terminal_thinking_color（3B82F6 蓝），
+        // done 复用 normal_color（9ECE6A 绿），error 复用 critical_color（F7768E 红）
+        const int blue_px = count_color(RGB(0x3B, 0x82, 0xF6));
+        const int green_px = count_color(RGB(0x9E, 0xCE, 0x6A));
+        const int red_px = count_color(RGB(0xF7, 0x76, 0x8E));
+        Line(L"    圆点像素数：蓝(思考中)=" + std::to_wstring(blue_px) +
+             L"  绿(已完成)=" + std::to_wstring(green_px) +
+             L"  红(出错)=" + std::to_wstring(red_px));
+        Check(blue_px > 0, L"终端状态圆点出现了 thinking 的蓝色");
+        Check(green_px > 0, L"终端状态圆点出现了 done 的绿色（复用 normal_color）");
+        Check(red_px > 0, L"终端状态圆点出现了 error 的红色（复用 critical_color）");
+
+        ::SelectObject(mem, old_bitmap);
+        ::DeleteObject(bitmap);
+        ::DeleteDC(mem);
+        ::ReleaseDC(nullptr, screen);
+    }
+
     Line(L"");
-    Check(plugin->GetItem(2) == nullptr, L"越界索引返回空指针");
+    Check(plugin->GetItem(3) == nullptr, L"越界索引返回空指针");
     Check(plugin->GetItem(-1) == nullptr, L"负索引返回空指针");
 
     Line(L"");
@@ -290,11 +446,12 @@ int wmain(int argc, wchar_t* argv[])
     for (int tick = 0; tick < 15; ++tick)
     {
         plugin->DataRequired();
+        const wchar_t* vt = (item_terminals != nullptr) ? item_terminals->GetItemValueText() : L"<null>";
         const wchar_t* v0 = (item0 != nullptr) ? item0->GetItemValueText() : L"<null>";
         const wchar_t* v1 = (item1 != nullptr) ? item1->GetItemValueText() : L"<null>";
-        wchar_t line[128]{};
-        _snwprintf_s(line, _TRUNCATE, L"    t=%2ds   5h: %-14s  7d: %-14s",
-                     tick, Safe(v0), Safe(v1));
+        wchar_t line[160]{};
+        _snwprintf_s(line, _TRUNCATE, L"    t=%2ds   terminals: %-6s  5h: %-14s  7d: %-14s",
+                     tick, Safe(vt), Safe(v0), Safe(v1));
         Line(line);
         ::Sleep(1000);
     }

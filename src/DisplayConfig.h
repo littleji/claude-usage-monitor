@@ -55,6 +55,25 @@ struct DisplayConfig
     ItemDisplay five_hour{ L"5h", L"{pct}% ({reset})" };
     ItemDisplay seven_day{ L"7d", L"{pct}% ({reset})" };
 
+    /**
+     * 终端状态项：超过该分钟数未更新的状态文件视为死会话（终端崩溃/被强制关闭，
+     * hook 来不及写 SessionEnd），扫描时直接忽略。
+     */
+    int terminal_stale_minutes{ 360 };
+    /** 终端状态项最多显示这么多个图标，多出的部分只在鼠标提示里列出，避免任务栏被占满 */
+    int terminal_max_icons{ 12 };
+
+    /**
+     * 终端状态的图标颜色：正常完成复用 normal_color、需要用户关注复用
+     * warn_color、出错复用 critical_color——和用量进度条共用同一套配色，
+     * 改一处两边都跟着变。思考中/空闲没有对应的阈值色，单独给两个默认值。
+     * 图标画的是插件自己用 GDI 画的实心圆点，不是彩色 emoji 字符——GDI 的文字
+     * 绘制不认字体自带的调色板，emoji 会被画成黑白轮廓，只有自己指定 RGB
+     * 画图形才能保证颜色一定对。
+     */
+    COLORREF terminal_thinking_color{ RGB(0x3B, 0x82, 0xF6) };
+    COLORREF terminal_idle_color{ RGB(0x9E, 0x9E, 0x9E) };
+
     /** 读取配置；文件或键不存在时保持默认值，并把生效值写回文件 */
     void Load(const std::wstring& config_dir);
 };

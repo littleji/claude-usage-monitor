@@ -76,7 +76,7 @@ private:
     LONG m_started{ 0 };
 
     // LoadConfig 在界面线程调用，取数线程会读它，因此用 Interlocked 访问。
-    mutable volatile LONG m_refresh_interval{ 300 };   /**< 成功后的刷新间隔（秒） */
+    mutable volatile LONG m_refresh_interval{ 60 };   /**< 成功后的刷新间隔（秒） */
     std::wstring m_config_path;
 };
 

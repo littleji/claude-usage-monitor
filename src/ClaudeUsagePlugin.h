@@ -1,9 +1,12 @@
 /*
  * TrafficMonitor 插件：Claude 用量监控
  *
- * 提供两个显示项：
- *   5h -> Claude 5 小时窗口已用额度 + 距离重置的剩余时间
- *   7d -> Claude 7 天窗口已用额度   + 距离重置的剩余时间
+ * 提供三个显示项：
+ *   终端状态 -> 每个正在运行的 Claude Code 终端一个 GDI 画的彩色圆点，代表其状态
+ *              （灰=空闲中/蓝=正在思考/黄=等待用户命令/绿=已完成/红=出错），数据来自
+ *              hooks 上报，见 TerminalStatus.h；没有终端在跑时显示"终端无AI应用"
+ *   5h       -> Claude 5 小时窗口已用额度 + 距离重置的剩余时间
+ *   7d       -> Claude 7 天窗口已用额度   + 距离重置的剩余时间
  * 默认渲染成 "5h 2% (4h19m)"，格式对齐 cship，可在 ini 中改。
  *
  * 默认由插件自绘（IsCustomDraw 返回 true），以便：
@@ -21,12 +24,52 @@
 #pragma warning(pop)
 
 #include "DisplayConfig.h"
+#include "TerminalStatus.h"
 #include "UsageApi.h"
 #include "UsageService.h"
 
 #include <string>
+#include <vector>
 
 class CClaudeUsagePlugin;
+
+/**
+ * 终端状态显示项：每个正在运行的 Claude Code 终端画一个彩色圆点（GDI 画的实心圆，
+ * 不是 emoji 字符——原因见 ClaudeUsagePlugin.cpp 里 StateDotColor 的注释），
+ * 表示它当前是空闲中/正在思考/等待用户命令/已完成/出错。
+ * 数据来自 terminals::Scan，本项只负责展示，详细文字放在插件共享的鼠标提示里。
+ */
+class CTerminalStatusItem : public IPluginItem
+{
+public:
+    explicit CTerminalStatusItem(CClaudeUsagePlugin& owner) : m_owner(owner) {}
+
+    const wchar_t* GetItemName() const override;
+    const wchar_t* GetItemId() const override;
+    const wchar_t* GetItemLableText() const override;
+    const wchar_t* GetItemValueText() const override;
+    const wchar_t* GetItemValueSampleText() const override;
+    bool IsCustomDraw() const override;
+    int GetItemWidth() const override;
+    int GetItemWidthEx(void* hDC) const override;
+    void DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode) override;
+    int OnMouseEvent(MouseEventType type, int x, int y, void* hWnd, int flag) override;
+
+    /**
+     * 由插件在 DataRequired 中调用。DataRequired 每秒都会被主程序调用，
+     * 但状态目录没必要扫这么勤——这里内部节流到最多每 5 秒真正扫一次。
+     */
+    void Update(time_t now);
+
+    /** 供 BuildTooltip 拼接鼠标提示用的详细文字（每个终端一行） */
+    std::wstring BuildTooltipSection(bool zh) const;
+
+private:
+    CClaudeUsagePlugin& m_owner;
+    std::vector<terminals::Entry> m_entries;
+    std::wstring m_icon_text{ L"" };   /**< 自绘用的图标串 */
+    time_t m_last_scan_at{ 0 };        /**< 上一次真正扫描状态目录的时间，用于节流 */
+};
 
 /** 一个用量窗口对应的显示项 */
 class CUsageItem : public IPluginItem
@@ -108,6 +151,7 @@ private:
 
     void BuildTooltip(const usage::Snapshot& snapshot, time_t now);
 
+    CTerminalStatusItem m_item_terminals{ *this };
     CUsageItem m_item_five_hour{ *this, CUsageItem::K_FIVE_HOUR };
     CUsageItem m_item_seven_day{ *this, CUsageItem::K_SEVEN_DAY };
     std::wstring m_tooltip;

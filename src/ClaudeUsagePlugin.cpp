@@ -40,6 +40,65 @@ void FillSolid(HDC dc, const RECT& rect, COLORREF color)
     ::DeleteObject(brush);
 }
 
+/** 用纯色画一个无描边的实心圆 */
+void FillDot(HDC dc, int center_x, int center_y, int diameter, COLORREF color)
+{
+    if (diameter <= 0)
+        return;
+    HBRUSH brush = ::CreateSolidBrush(color);
+    if (brush == nullptr)
+        return;
+    HGDIOBJ old_brush = ::SelectObject(dc, brush);
+    HGDIOBJ old_pen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));   // 不描边，纯色块
+    const int radius = diameter / 2;
+    ::Ellipse(dc, center_x - radius, center_y - radius, center_x + radius, center_y + radius);
+    ::SelectObject(dc, old_pen);
+    ::SelectObject(dc, old_brush);
+    ::DeleteObject(brush);
+}
+
+/**
+ * 终端状态对应的圆点颜色。正常完成/需要关注/出错复用用量进度条的三档配色
+ * （normal/warn/critical），改一处两边跟着变；思考中/空闲没有对应的阈值色，
+ * 单独给两个可配置的默认值。
+ *
+ * 用 GDI 自己画圆点、不用彩色 emoji 字符：GDI 的文字绘制（DrawTextW 等）不认
+ * 字体自带的调色板（emoji 用的 COLR/CPAL 彩色字体表），只按 SetTextColor 设的
+ * 单一颜色画字形轮廓，彩色 emoji 会被画成黑白轮廓。自己指定 RGB 画图形才能
+ * 保证颜色一定对，也是现有进度条（FillSolid）已经验证过在任务栏能正确显示颜色的
+ * 同一套机制。
+ */
+COLORREF StateDotColor(terminals::State state, const usage::DisplayConfig& cfg)
+{
+    switch (state)
+    {
+    case terminals::State::Idle:     return cfg.terminal_idle_color;
+    case terminals::State::Thinking: return cfg.terminal_thinking_color;
+    case terminals::State::Waiting:  return cfg.warn_color;
+    case terminals::State::Done:     return cfg.normal_color;
+    case terminals::State::Error:    return cfg.critical_color;
+    }
+    return cfg.terminal_idle_color;
+}
+
+/**
+ * 圆点直径，按 hDC 的 DPI 缩放（96 DPI 下 10px）。
+ *
+ * 故意不用显示区域的高度 h 来推：GetItemWidthEx 拿不到 h（接口只给 hDC），
+ * 如果 DrawItem 用 h、GetItemWidthEx 用字体行高去估，两边极易算出不同的直径，
+ * 于是 GetItemWidthEx 报的宽度和 DrawItem 实际画出来的宽度对不上，
+ * 多出来的圆点会被 DrawItem 里的越界保护悄悄裁掉。两处统一只认 hDC 的 DPI，
+ * 才能保证宽度估算和实际绘制永远一致。
+ */
+int DotDiameterFor(HDC dc)
+{
+    int dpi = ::GetDeviceCaps(dc, LOGPIXELSY);
+    if (dpi <= 0)
+        dpi = 96;
+    const int base_diameter_at_96dpi = 10;
+    return std::max(6, ::MulDiv(base_diameter_at_96dpi, dpi, 96));
+}
+
 /**
  * 把颜色向背景方向压暗，用作进度条的底槽。
  * 深色背景往黑压，浅色背景往白提，这样底槽在两种主题下都只是"淡一档"。
@@ -280,6 +339,207 @@ void CUsageItem::Update(const usage::Snapshot& snapshot, time_t now)
 }
 
 //////////////////////////////////////////////////////////////////////////
+// CTerminalStatusItem
+
+const wchar_t* CTerminalStatusItem::GetItemName() const
+{
+    return Pick(L"Claude 终端状态", L"Claude Terminal Status");
+}
+
+const wchar_t* CTerminalStatusItem::GetItemId() const
+{
+    return L"ClaudeTerminalStatus";
+}
+
+const wchar_t* CTerminalStatusItem::GetItemLableText() const
+{
+    return L"";   // 只用图标说话，不需要文字标签
+}
+
+const wchar_t* CTerminalStatusItem::GetItemValueText() const
+{
+    return m_icon_text.c_str();
+}
+
+const wchar_t* CTerminalStatusItem::GetItemValueSampleText() const
+{
+    return m_icon_text.empty() ? terminals::StateEmoji(terminals::State::Idle) : m_icon_text.c_str();
+}
+
+bool CTerminalStatusItem::IsCustomDraw() const
+{
+    return m_owner.Display().custom_draw;
+}
+
+int CTerminalStatusItem::GetItemWidth() const
+{
+    return 24;   // 只在 GetItemWidthEx 返回 0 时才会用到：一个图标的估值
+}
+
+int CTerminalStatusItem::GetItemWidthEx(void* hDC) const
+{
+    HDC dc = static_cast<HDC>(hDC);
+    if (dc == nullptr)
+        return 0;
+
+    TEXTMETRICW metrics{};
+    const bool have_metrics = ::GetTextMetricsW(dc, &metrics) != FALSE;
+    const int padding = have_metrics ? std::max(4, static_cast<int>(metrics.tmHeight / 3)) : 4;
+
+    if (m_entries.empty())
+    {
+        // 没有终端在跑：宽度按占位文字（"终端无AI应用" / "No AI running"）算
+        RECT measured{ 0, 0, 0, 0 };
+        ::DrawTextW(dc, m_icon_text.c_str(), -1, &measured,
+                    DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        return (measured.right - measured.left) + padding;
+    }
+
+    // 有终端在跑：宽度按圆点个数 + 溢出提示 "+N" 的文字宽度算
+    const int diameter = DotDiameterFor(dc);
+    const int gap = std::max(2, diameter / 3);
+
+    const usage::DisplayConfig& cfg = m_owner.Display();
+    const size_t shown = std::min(m_entries.size(), static_cast<size_t>(cfg.terminal_max_icons));
+    int width = static_cast<int>(shown) * (diameter + gap);
+
+    if (m_entries.size() > shown)
+    {
+        const std::wstring overflow = L"+" + std::to_wstring(m_entries.size() - shown);
+        RECT measured{ 0, 0, 0, 0 };
+        ::DrawTextW(dc, overflow.c_str(), -1, &measured,
+                    DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        width += (measured.right - measured.left);
+    }
+
+    return width + padding;
+}
+
+void CTerminalStatusItem::DrawItem(void* hDC, int x, int y, int w, int h, bool dark_mode)
+{
+    HDC dc = static_cast<HDC>(hDC);
+    if (dc == nullptr || w <= 0 || h <= 0)
+        return;
+
+    const COLORREF base = m_owner.GetBaseTextColor(dark_mode);
+    const int saved_dc = ::SaveDC(dc);
+    ::SetBkMode(dc, TRANSPARENT);
+
+    if (m_entries.empty())
+    {
+        // 没有终端在跑：画占位文字，不需要颜色
+        RECT text_rect{ x, y, x + w, y + h };
+        ::SetTextColor(dc, base);
+        ::DrawTextW(dc, m_icon_text.c_str(), -1, &text_rect,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+        ::RestoreDC(dc, saved_dc);
+        return;
+    }
+
+    // 每个终端画一个实心圆点，颜色代表状态——理由见 StateDotColor 上面的注释
+    const usage::DisplayConfig& cfg = m_owner.Display();
+    const int diameter = DotDiameterFor(dc);
+    const int gap = std::max(2, diameter / 3);
+    const int center_y = y + h / 2;
+    int cursor_x = x + diameter / 2;
+
+    const size_t shown = std::min(m_entries.size(), static_cast<size_t>(cfg.terminal_max_icons));
+    size_t drawn = 0;
+    for (; drawn < shown && cursor_x + diameter / 2 <= x + w; ++drawn)
+    {
+        FillDot(dc, cursor_x, center_y, diameter, StateDotColor(m_entries[drawn].state, cfg));
+        cursor_x += diameter + gap;
+    }
+
+    if (m_entries.size() > drawn)
+    {
+        const std::wstring overflow = L"+" + std::to_wstring(m_entries.size() - drawn);
+        RECT text_rect{ cursor_x - diameter / 2, y, x + w, y + h };
+        ::SetTextColor(dc, base);
+        ::DrawTextW(dc, overflow.c_str(), -1, &text_rect,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+
+    ::RestoreDC(dc, saved_dc);
+}
+
+int CTerminalStatusItem::OnMouseEvent(MouseEventType type, int /*x*/, int /*y*/,
+                                      void* /*hWnd*/, int /*flag*/)
+{
+    if (type == MT_DBCLICKED)
+    {
+        // 状态由 hooks 写文件、插件被动扫描，没有"刷新"的概念，
+        // 双击也交回主程序处理（比如弹出显示设置）。
+        return 0;
+    }
+    return 0;
+}
+
+void CTerminalStatusItem::Update(time_t now)
+{
+    // DataRequired 每秒都会被调用一次，跟随它节流到 1 秒扫一次。
+    const int kScanIntervalSeconds = 1;
+    if (now - m_last_scan_at < kScanIntervalSeconds)
+        return;
+    m_last_scan_at = now;
+
+    const usage::DisplayConfig& cfg = m_owner.Display();
+    m_entries = terminals::Scan(now, cfg.terminal_stale_minutes * 60);
+
+    if (m_entries.empty())
+    {
+        m_icon_text = PluginUseChinese() ? L"终端无AI应用" : L"No AI running";
+        return;
+    }
+
+    std::wstring icons;
+    const size_t shown = std::min(m_entries.size(), static_cast<size_t>(cfg.terminal_max_icons));
+    for (size_t i = 0; i < shown; ++i)
+        icons += terminals::StateEmoji(m_entries[i].state);
+    if (m_entries.size() > shown)
+        icons += L"+" + std::to_wstring(m_entries.size() - shown);
+
+    m_icon_text.swap(icons);
+}
+
+std::wstring CTerminalStatusItem::BuildTooltipSection(bool zh) const
+{
+    std::wstring text = zh ? L"Claude 终端：\n" : L"Claude terminals:\n";
+
+    if (m_entries.empty())
+    {
+        text += zh ? L"  终端无AI应用（没有检测到运行中的终端，或还没配置 hooks）\n"
+                   : L"  No AI running (no terminals detected, or hooks aren't set up)\n";
+        return text;
+    }
+
+    for (const terminals::Entry& entry : m_entries)
+    {
+        text += L"  ";
+        text += terminals::StateEmoji(entry.state);
+        text += L" ";
+        text += terminals::StateLabel(entry.state, zh);
+
+        // 会话 id 通常是较长的 UUID，只取前 8 位便于辨认同一个终端
+        std::wstring short_id = entry.session_id.substr(0, 8);
+        text += zh ? L"（会话 " : L" (session ";
+        text += short_id;
+        if (!entry.error_type.empty())
+        {
+            text += zh ? L"，错误类型 " : L", error type ";
+            text += entry.error_type;
+        }
+        if (!entry.cwd.empty())
+        {
+            text += zh ? L"，目录 " : L", dir ";
+            text += entry.cwd;
+        }
+        text += zh ? L"）\n" : L")\n";
+    }
+    return text;
+}
+
+//////////////////////////////////////////////////////////////////////////
 // CClaudeUsagePlugin
 
 CClaudeUsagePlugin& CClaudeUsagePlugin::Instance()
@@ -300,8 +560,10 @@ IPluginItem* CClaudeUsagePlugin::GetItem(int index)
     switch (index)
     {
     case 0:
-        return &m_item_five_hour;
+        return &m_item_terminals;
     case 1:
+        return &m_item_five_hour;
+    case 2:
         return &m_item_seven_day;
     default:
         return nullptr;
@@ -317,6 +579,9 @@ void CClaudeUsagePlugin::DataRequired()
     const usage::Snapshot snapshot = usage::Service::Instance().GetSnapshot();
     const time_t now = ::time(nullptr);
 
+    // 终端状态文件是本地磁盘上的几个小文件，扫描一次是微秒级操作，
+    // 不像用量接口那样有网络延迟，所以可以放心地直接在这里做，不需要额外线程。
+    m_item_terminals.Update(now);
     m_item_five_hour.Update(snapshot, now);
     m_item_seven_day.Update(snapshot, now);
     BuildTooltip(snapshot, now);
@@ -325,7 +590,7 @@ void CClaudeUsagePlugin::DataRequired()
 void CClaudeUsagePlugin::BuildTooltip(const usage::Snapshot& snapshot, time_t now)
 {
     const bool zh = PluginUseChinese();
-    std::wstring text;
+    std::wstring text = m_item_terminals.BuildTooltipSection(zh) + L"\n";
 
     auto append_period = [&](const wchar_t* label, const usage::Period& period)
     {

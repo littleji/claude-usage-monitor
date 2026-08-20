@@ -44,6 +44,18 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $archList = if ($Arch -eq 'all') { @('x64', 'x86') } else { @($Arch) }
 
+# Import-VcVars 会把当前会话的 PATH 整个替换成一份精简版，并且把 vcvarsall.bat
+# 设置的 INCLUDE/LIB/LIBPATH/VSCMD_* 等一大堆环境变量原样搬进当前会话（见该
+# 函数内的注释）。这个脚本经常被直接在日常交互用的 PowerShell 窗口里手动跑，
+# 而不是专门开一个用完就关的临时窗口——如果不还原，构建一结束，同一个窗口里
+# claude/npm/nvm 之类装在别处的命令就全都找不到了，而且这些改动会一直留到
+# 关掉那个窗口为止，非常隐蔽。所以这里先把整个环境变量表快照下来，下面用
+# try/finally 包住整个构建过程，保证不管成功还是中途报错退出，都会把会话的
+# 环境变量精确还原成运行前的样子（脚本新增的变量会被删掉，改过的变量会被
+# 改回原值）。
+$originalEnv = @{}
+Get-ChildItem Env: | ForEach-Object { $originalEnv[$_.Name] = $_.Value }
+
 if ($Install -and $archList.Count -gt 1) {
     throw "-Install 只能配合单一架构使用（-Arch x64 或 -Arch x86），因为它要求 DLL 位数与 TrafficMonitor.exe 一致。"
 }
@@ -122,6 +134,8 @@ function Import-VcVars {
     Write-Host "MSVC 环境就绪：$Architecture" -ForegroundColor DarkGray
 }
 
+try {
+
 $version = if ($Zip) { Get-PluginVersion } else { $null }
 $zipPaths = @()
 
@@ -154,6 +168,7 @@ $dllSources = @(
     "$root\src\UsageService.cpp",
     "$root\src\UsageApi.cpp",
     "$root\src\DisplayConfig.cpp",
+    "$root\src\TerminalStatus.cpp",
     "$root\src\TimeUtil.cpp",
     "$root\src\Json.cpp",
     "$root\src\DllMain.cpp"
@@ -233,4 +248,19 @@ if ($Zip -and $zipPaths.Count -gt 1) {
     Write-Host ""
     Write-Host "全部打包完成：" -ForegroundColor Green
     $zipPaths | ForEach-Object { Write-Host "  $_" }
+}
+
+} finally {
+    # 不管上面成功还是中途 throw，都把调用者的环境变量精确还原成运行前的样子：
+    # 构建过程中新增的变量删掉，改过的变量改回原值。先把当前变量名整个物化成
+    # 数组再删——直接在 Get-ChildItem 的管道里删会一边遍历一边改集合。
+    $currentNames = @(Get-ChildItem Env: | ForEach-Object { $_.Name })
+    foreach ($name in $currentNames) {
+        if (-not $originalEnv.ContainsKey($name)) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($name in $originalEnv.Keys) {
+        Set-Item "Env:$name" -Value $originalEnv[$name] -ErrorAction SilentlyContinue
+    }
 }

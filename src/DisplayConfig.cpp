@@ -129,6 +129,20 @@ void DisplayConfig::Load(const std::wstring& config_dir)
     seven_day.label = ReadString(path, L"seven_day_label", seven_day.label);
     seven_day.format = ReadString(path, L"seven_day_format", seven_day.format);
 
+    const int stale = ::GetPrivateProfileIntW(kSection, L"terminal_stale_minutes",
+                                              terminal_stale_minutes, path.c_str());
+    terminal_stale_minutes = std::max(1, stale);
+    const int max_icons = ::GetPrivateProfileIntW(kSection, L"terminal_max_icons",
+                                                  terminal_max_icons, path.c_str());
+    terminal_max_icons = std::max(1, std::min(64, max_icons));
+
+    terminal_thinking_color = ParseColor(
+        ReadString(path, L"terminal_thinking_color", ColorToString(terminal_thinking_color)),
+        terminal_thinking_color);
+    terminal_idle_color = ParseColor(
+        ReadString(path, L"terminal_idle_color", ColorToString(terminal_idle_color)),
+        terminal_idle_color);
+
     // 把生效的配置写回，让用户看得到有哪些可调项
     WriteInt(path, L"custom_draw", custom_draw ? 1 : 0);
     WriteInt(path, L"show_bar", show_bar ? 1 : 0);
@@ -142,6 +156,10 @@ void DisplayConfig::Load(const std::wstring& config_dir)
     WriteString(path, L"five_hour_format", five_hour.format);
     WriteString(path, L"seven_day_label", seven_day.label);
     WriteString(path, L"seven_day_format", seven_day.format);
+    WriteInt(path, L"terminal_stale_minutes", terminal_stale_minutes);
+    WriteInt(path, L"terminal_max_icons", terminal_max_icons);
+    WriteString(path, L"terminal_thinking_color", ColorToString(terminal_thinking_color));
+    WriteString(path, L"terminal_idle_color", ColorToString(terminal_idle_color));
 }
 
 }   // namespace usage

@@ -20,10 +20,11 @@ Claude 的额度用量与距离窗口重置的剩余时间：
 
 | 显示项 | 渲染结果 | 说明 |
 | --- | --- | --- |
+| Claude 终端状态 | `● ● ●` / `终端无AI应用` | 每个正在运行的 Claude Code 终端一个彩色圆点（蓝/黄/绿/红/灰），代表它当前的状态；没有终端在跑时显示提示文字。需要配置 hooks 才有数据，见下文 |
 | Claude 5小时用量 | `5h 21% (1h50m)` | 5 小时窗口已用百分比，括号内是距离重置的剩余时间 |
 | Claude 7天用量 | `7d 47% (3d2h)` | 7 天窗口已用百分比与剩余时间 |
 
-两个显示项相互独立，可以在 TrafficMonitor 的「显示设置」里分别勾选。
+三个显示项相互独立，可以在 TrafficMonitor 的「显示设置」里分别勾选。
 
 插件默认**自绘**整个显示区域（`IsCustomDraw` 返回 `true`），这样能做到三件主程序
 默认排版做不到的事：
@@ -61,6 +62,136 @@ Claude 的额度用量与距离窗口重置的剩余时间：
 额外用量（Extra usage）、最近一次更新时间，以及取数失败时的具体原因。
 
 **双击**显示项可以立即刷新，也可以在插件右键菜单里选「立即刷新用量」。
+
+---
+
+## Claude 终端状态
+
+显示当前机器上有多少个 Claude Code 终端在跑，以及每个终端的状态：
+
+| 颜色 / 状态 | 触发时机 | 默认色值 |
+| --- | --- | --- |
+| 灰色 空闲中 | 会话刚打开还没提交过指令；或者已经聊完，放着没人管 | `terminal_idle_color`，默认 `9E9E9E` |
+| 蓝色 正在思考 | 已提交请求，Claude 正在处理 | `terminal_thinking_color`，默认 `3B82F6` |
+| 黄/橙色 等待用户命令 | Claude 真的需要你现在做个决定（权限确认、MCP 弹窗要输入等） | 复用 `warn_color`，默认 `E0AF68` |
+| 绿色 已完成 | 一轮回复正常结束 | 复用 `normal_color`，默认 `9ECE6A` |
+| 红色 出错/异常中断 | 一轮回复因 API 错误异常终止（限流、服务端错误、鉴权失败等） | 复用 `critical_color`，默认 `F7768E` |
+
+圆点是插件自己用 GDI 画的（`Ellipse` + 纯色画刷），**不是**彩色 emoji 字符。早期版本
+用 🔵🟡🟢🔴 这类色块 emoji 做过，但 GDI 的文字绘制（`DrawTextW` 等）不认字体自带的
+调色板（emoji 用的 COLR/CPAL 彩色字体表），只按 `SetTextColor` 设的单一颜色画字形
+轮廓——结果所有颜色的 emoji 全部变成清一色的黑白轮廓，等于白做。真正的彩色字体
+渲染要走 DirectWrite/Direct2D 的专门接口，GDI 画文字拿不到，所以改成插件自己画图形：
+颜色完全由代码里指定的 RGB 值决定，和现有进度条（`FillRect` 画色块）用的是同一套
+已经在任务栏验证过能正确显示颜色的机制，不依赖字体或渲染路径。
+
+"等待"和"已完成"直接复用了用量进度条已有的 `warn_color` / `normal_color` / `critical_color`
+三档配色（改一处两边都跟着变）；"思考中"和"空闲"没有对应的阈值色，单独给了
+`terminal_thinking_color` / `terminal_idle_color` 两个可配置项，见下文。
+
+如果当前没有任何终端在跑（没配 hooks，或者所有终端都关掉了），显示项不会空着，
+而是显示一行文字：`终端无AI应用`（英文环境下是 `No AI running`）。
+
+鼠标移动到显示项上，鼠标提示里会列出每个终端的完整状态、所在目录（如果 hook 上报了
+`cwd`）、错误类型（仅出错状态）和会话 id 前 8 位，方便区分是哪个终端；图标超过
+`terminal_max_icons`（见下文）时，任务栏上只显示前若干个加一个 `+N`，完整列表仍然
+在鼠标提示里。状态目录每 5 秒才真正扫一次（内部节流），不会因为 TrafficMonitor
+每秒调用一次 `DataRequired` 就跟着每秒扫盘。
+
+插件本身看不到 Claude Code 进程内部在做什么——这个信息需要 Claude Code 主动上报。
+上报方式是 Claude Code 的 hooks：每次 `SessionStart` / `UserPromptSubmit` /
+`Notification` / `Stop` / `StopFailure` / `SessionEnd` 事件发生时，调用一个小脚本，
+把状态写到
+
+```
+<CLAUDE_CONFIG_DIR 或 %USERPROFILE%\.claude>\status\<session_id>.json
+```
+
+插件定期扫描这个目录来统计终端数量与状态，不需要额外的网络请求。
+
+之所以专门监听 `StopFailure`：`Stop` 事件只在一轮回复**正常结束**时触发，本身不带
+任何错误信息；真正的失败信号（限流 `rate_limit`、服务端过载 `overloaded`、鉴权失败
+`authentication_failed` 等 `error_type`）只出现在 `StopFailure` 里，所以出错状态
+（🔴）必须单独监听这个事件才能拿到。
+
+`Notification` 不当成单一状态处理：它的 `notification_type` 取值很杂
+（`permission_prompt`、`idle_prompt`、`auth_success`、`elicitation_*`、
+`agent_completed`……），大部分根本不代表"需要你处理"。只有权限确认/MCP 弹窗
+这类才映射成黄色；`idle_prompt`（Claude Code 自己发的"你还在吗"提示）映射成
+灰色而不是黄色，因为它本质就是"终端空着没人管"，不是真在等你做决定——不然一个
+已经聊完的对话（🟢）放一会儿不动，就会被这条提示错误地顶回黄色。其余类型
+（`auth_success`/`elicitation_complete` 等）直接忽略，不改变当前颜色。
+
+### 配置 hooks
+
+1. 仓库自带 `tools\claude-hook-status.ps1`，就是被 hook 调用的那个脚本，事件到状态的
+   映射写在脚本注释里。
+2. 在 Claude Code 的全局设置 `%USERPROFILE%\.claude\settings.json` 的 `hooks` 里加上
+   （把脚本路径换成本机的实际路径）：
+
+```jsonc
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event SessionStart" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event UserPromptSubmit" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event Notification" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event Stop" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event StopFailure" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event SessionEnd" } ] }
+    ]
+  }
+}
+```
+
+   `<repo>`换成本仓库的实际路径，例如
+   `D:\projects\1-test-space\6-rust\claude-usage-monitor`。如果 `settings.json`
+   里已经有其他 hooks，把对应事件数组里的 `hooks` 项追加进去即可，不用整段替换。
+3. 重启已经打开的 Claude Code 终端（hooks 只在新会话里生效）。
+
+配置好之后，每打开一个 Claude Code 终端，任务栏上就会多一个圆点；正常退出终端
+（`/exit` 或 Ctrl+D）会触发 `SessionEnd`，自动清掉对应的状态文件。
+
+如果终端是直接被叉掉窗口、或者进程被强杀，`SessionEnd` 根本来不及跑——这种情况
+插件不靠"等超时"：状态文件里记着这个终端所属进程的 PID（hook 脚本顺着进程树往上
+找到的，跳过 `powershell`/`cmd` 这类中转 shell），插件每次扫描时会用
+`OpenProcess`/`GetExitCodeProcess` 验证这个 PID 还活不活着，进程已经不在了就直接
+删掉状态文件，圆点马上消失，不用等 `terminal_stale_minutes`（默认 360 分钟）超时。
+只有旧版本写的、没有 `pid` 字段的状态文件才会退回超时兜底。
+
+Task/Agent 工具调出去的子代理不算一个用户能看到的终端窗口，hook 脚本看到事件
+payload 里带 `agent_id`/`agent_type` 字段（子代理特有）就直接跳过、不写状态文件，
+不会因为跑了几次子任务就在任务栏多出圆点。
+
+### 相关配置项
+
+```ini
+[display]
+terminal_stale_minutes=360
+terminal_max_icons=12
+terminal_thinking_color=3B82F6
+terminal_idle_color=9E9E9E
+```
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `terminal_stale_minutes` | `360` | 状态文件超过这么多分钟没更新就当作死会话忽略 |
+| `terminal_max_icons` | `12` | 任务栏最多显示这么多个图标，超出的部分只在鼠标提示里列出（图标后面会跟一个 `+N`） |
+| `terminal_thinking_color` | `3B82F6` | "正在思考"圆点的颜色，`RRGGBB` 十六进制 |
+| `terminal_idle_color` | `9E9E9E` | "空闲中"圆点的颜色，`RRGGBB` 十六进制 |
+
+> "等待用户命令"用的是 `warn_color`、"已完成"用的是 `normal_color`、"出错"用的是
+> `critical_color`——这三个就是上面用量进度条的配色项，改了会同时影响两处。
 
 ---
 
@@ -323,6 +454,7 @@ src/
   UsageApi.h / UsageApi.cpp      读凭据 + WinHTTP 请求 + 响应解析 + 演示模式
   UsageService.h / UsageService.cpp   后台取数线程、快照、退避重试
   DisplayConfig.h / DisplayConfig.cpp 排版与配色配置、格式串占位符替换
+  TerminalStatus.h / TerminalStatus.cpp 扫描 hooks 写的终端状态文件
   ClaudeUsagePlugin.h / .cpp     ITMPlugin / IPluginItem 实现与导出函数
   DllMain.cpp                    模块 PIN，避免卸载时线程悬空
 include/
@@ -330,6 +462,7 @@ include/
 tools/
   Probe.cpp                      命令行探针与离线自检
   HostTest.cpp                   宿主测试（LoadLibrary 驱动插件全生命周期）
+  claude-hook-status.ps1         Claude Code hook 脚本，上报终端状态（见「Claude 终端状态」一节）
 ```
 
 几个刻意的设计选择：

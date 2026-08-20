@@ -100,6 +100,7 @@
     <ClCompile Include="src\UsageService.cpp" />
     <ClCompile Include="src\UsageApi.cpp" />
     <ClCompile Include="src\DisplayConfig.cpp" />
+    <ClCompile Include="src\TerminalStatus.cpp" />
     <ClCompile Include="src\TimeUtil.cpp" />
     <ClCompile Include="src\Json.cpp" />
     <ClCompile Include="src\DllMain.cpp" />
@@ -110,6 +111,7 @@
     <ClInclude Include="src\UsageService.h" />
     <ClInclude Include="src\UsageApi.h" />
     <ClInclude Include="src\DisplayConfig.h" />
+    <ClInclude Include="src\TerminalStatus.h" />
     <ClInclude Include="src\TimeUtil.h" />
     <ClInclude Include="src\Json.h" />
   </ItemGroup>
