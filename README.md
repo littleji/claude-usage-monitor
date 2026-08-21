@@ -292,6 +292,11 @@ of `%USERPROFILE%\.claude`.
 > The DLL's bitness must match `TrafficMonitor.exe`'s. This repo builds x64 by default;
 > for the 32-bit build use `.\build.ps1 -Arch x86`.
 
+Installing just the DLL is enough for the two usage items above; **the "Claude terminal
+status" item needs hooks configured separately** — it doesn't work out of the box just
+from installing the DLL. See "Configuring the hooks" under
+[Claude terminal status](#claude-terminal-status) below.
+
 ### Option 2: build from source and install
 
 ```powershell

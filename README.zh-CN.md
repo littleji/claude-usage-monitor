@@ -252,6 +252,10 @@ GET https://api.anthropic.com/api/oauth/usage
 > DLL 的位数必须和 TrafficMonitor.exe 一致。本仓库默认构建 x64；32 位版本用
 > `.\build.ps1 -Arch x86`。
 
+只装 DLL 就能用以上两个用量显示项；**「Claude 终端状态」这一项还需要额外配置
+hooks**，装完 DLL 不会自动生效，配置方法见下面「[Claude 终端状态](#claude-终端状态)」
+一节的「配置 hooks」。
+
 ### 方式二：从源码构建并安装
 
 ```powershell
