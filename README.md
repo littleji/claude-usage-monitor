@@ -18,6 +18,18 @@ reuses the local login credentials Claude Code already has and calls Anthropic's
 usage API directly. **No Node.js, no browser, no second login, no cookie scraping.**
 The whole plugin is a single self-contained DLL.
 
+**A feature cship doesn't have**: the taskbar also shows what each running Claude Code
+terminal is currently doing — 🔵 thinking, 🟡 waiting on you to decide something,
+🟢 done, 🔴 errored, 🔘 idle — so with several terminals open you can tell which one
+needs attention at a glance, without alt-tabbing through every window to check:
+
+```
+● ● ●   ← three terminals: thinking / waiting on you / done
+```
+
+The plugin can't see this on its own — it's reported by Claude Code's hooks. See
+"[Claude terminal status](#claude-terminal-status)" below.
+
 ---
 
 ## What it shows
