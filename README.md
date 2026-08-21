@@ -1,133 +1,168 @@
-# Claude Usage Monitor — TrafficMonitor 插件
+# Claude Usage Monitor — a TrafficMonitor plugin
+
+**English** | [简体中文](README.zh-CN.md)
+
 ![](https://github.com/littleji/claude-usage-monitor/blob/main/example.png)
 
 
 
-在 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) 的windows任务栏上显示
-Claude 的额度用量与距离窗口重置的剩余时间：
+Shows Claude's usage quota and the time remaining until each window resets, right on the
+Windows taskbar via [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor):
 
 ```
 5h  21% (1h50m)      7d  47% (3d2h)
 ```
 
-取数方式与 [cship](https://github.com/stephenleo/cship) 完全一致：直接复用 Claude Code
-已有的本地登录凭据，调用 Anthropic 的 OAuth 用量接口。**不需要 Node.js，不需要浏览器，
-不需要二次登录，也不抓取任何 Cookie。** 整个插件就是一个自包含的 DLL。
+Data is fetched the exact same way as [cship](https://github.com/stephenleo/cship): it
+reuses the local login credentials Claude Code already has and calls Anthropic's OAuth
+usage API directly. **No Node.js, no browser, no second login, no cookie scraping.**
+The whole plugin is a single self-contained DLL.
 
 ---
 
-## 显示内容
+## What it shows
 
-| 显示项 | 渲染结果 | 说明 |
+| Item | Rendered as | Notes |
 | --- | --- | --- |
-| Claude 终端状态 | `● ● ●` / `终端无AI应用` | 每个正在运行的 Claude Code 终端一个彩色圆点（蓝/黄/绿/红/灰），代表它当前的状态；没有终端在跑时显示提示文字。需要配置 hooks 才有数据，见下文 |
-| Claude 5小时用量 | `5h 21% (1h50m)` | 5 小时窗口已用百分比，括号内是距离重置的剩余时间 |
-| Claude 7天用量 | `7d 47% (3d2h)` | 7 天窗口已用百分比与剩余时间 |
+| Claude terminal status | `● ● ●` / `No AI running` | One colored dot (blue/yellow/green/red/gray) per running Claude Code terminal, showing its current state; shows a hint text when no terminal is running. Requires hooks to be configured — see below |
+| Claude 5-hour usage | `5h 21% (1h50m)` | Percentage used in the 5-hour window, with time until reset in parentheses |
+| Claude 7-day usage | `7d 47% (3d2h)` | Percentage used in the 7-day window and time until reset |
 
-三个显示项相互独立，可以在 TrafficMonitor 的「显示设置」里分别勾选。
+The three items are independent and can be toggled separately in TrafficMonitor's
+display settings.
 
-插件默认**自绘**整个显示区域（`IsCustomDraw` 返回 `true`），这样能做到三件主程序
-默认排版做不到的事：
+By default the plugin **custom-draws** the entire display area (`IsCustomDraw` returns
+`true`), which lets it do three things the host program's default layout cannot:
 
-- **标签和数值之间有稳定的间距**。交给主程序拼接时中间不留空格，会挤成 `5h21%(1h50m)`。
-- **按阈值上色**：额度 ≥60% 转黄、≥80% 转红，阈值与配色默认取 cship 的设定；
-  低于警告线时沿用当前皮肤的文字颜色，不破坏主题。
-- **文字下方一条细进度条**表示额度占比，不看数字也能感知。
+- **Stable spacing between the label and the value.** Letting the host program
+  concatenate them leaves no gap, squashing it into `5h21%(1h50m)`.
+- **Threshold-based coloring**: usage ≥60% turns yellow, ≥80% turns red — thresholds and
+  colors default to cship's settings; below the warning line it follows the current
+  skin's text color and doesn't fight the theme.
+- **A thin progress bar under the text** for the usage ratio, so you can gauge it
+  without reading the number.
 
 ```
-  5h 85% (1h50m)          <- 文字转为危险色
-  ███████████████░░░░     <- 底部细条，填充部分同色
+  5h 85% (1h50m)          <- text turns to the danger color
+  ███████████████░░░░     <- thin bar underneath, filled portion in the same color
 ```
 
-不喜欢自绘可以在配置里关掉（`custom_draw=0`），退回主程序的默认排版。
+If you don't like the custom drawing, turn it off in the config (`custom_draw=0`) to
+fall back to the host program's default layout.
 
-剩余时间的格式对齐 cship：
+The remaining-time format matches cship:
 
-| 剩余 | 显示 |
+| Remaining | Shown as |
 | --- | --- |
-| 不足 1 小时 | `45m` |
-| 不足 1 天 | `4h12m` |
-| 1 天以上 | `3d2h` |
-| 接口未返回重置时刻 | `?` |
-| 已经过了重置时刻 | `now` |
+| Less than 1 hour | `45m` |
+| Less than 1 day | `4h12m` |
+| 1 day or more | `3d2h` |
+| API didn't return a reset time | `?` |
+| Reset time has already passed | `now` |
 
-其他状态：
+Other states:
 
-| 数值显示 | 含义 |
+| Value shown | Meaning |
 | --- | --- |
-| `--` | 还没成功取到过数据（刚启动，或凭据/网络有问题，详见鼠标提示） |
-| `N/A` | 接口没有返回这个窗口（部分 Enterprise 账号是这样） |
+| `--` | No successful fetch yet (just started, or a credential/network issue — see the tooltip) |
+| `N/A` | The API didn't return this window (happens for some Enterprise accounts) |
 
-**鼠标提示（tooltip）** 里还会显示 5h/7d 的绝对重置时刻、Opus / Sonnet 的 7 天分项额度、
-额外用量（Extra usage）、最近一次更新时间，以及取数失败时的具体原因。
+The **tooltip** also shows the absolute reset time for the 5h/7d windows, the per-model
+7-day sub-quotas for Opus/Sonnet, extra usage, the last update time, and the specific
+reason when a fetch fails.
 
-**双击**显示项可以立即刷新，也可以在插件右键菜单里选「立即刷新用量」。
+**Double-click** the item to refresh immediately, or pick "Refresh usage now" from the
+plugin's right-click menu.
 
 ---
 
-## Claude 终端状态
+## Claude terminal status
 
-显示当前机器上有多少个 Claude Code 终端在跑，以及每个终端的状态：
+Shows how many Claude Code terminals are currently running on this machine, and each
+one's status:
 
-| 颜色 / 状态 | 触发时机 | 默认色值 |
+| Color / status | Triggered by | Default color |
 | --- | --- | --- |
-| 灰色 空闲中 | 会话刚打开还没提交过指令；或者已经聊完，放着没人管 | `terminal_idle_color`，默认 `9E9E9E` |
-| 蓝色 正在思考 | 已提交请求，Claude 正在处理 | `terminal_thinking_color`，默认 `3B82F6` |
-| 黄/橙色 等待用户命令 | Claude 真的需要你现在做个决定（权限确认、MCP 弹窗要输入等） | 复用 `warn_color`，默认 `E0AF68` |
-| 绿色 已完成 | 一轮回复正常结束 | 复用 `normal_color`，默认 `9ECE6A` |
-| 红色 出错/异常中断 | 一轮回复因 API 错误异常终止（限流、服务端错误、鉴权失败等） | 复用 `critical_color`，默认 `F7768E` |
+| Gray, Idle | Session just opened and hasn't submitted anything yet; or the conversation is done and sitting untouched | `terminal_idle_color`, default `9E9E9E` |
+| Blue, Thinking | A request has been submitted and Claude is processing it | `terminal_thinking_color`, default `3B82F6` |
+| Yellow/Orange, Waiting for input | Claude genuinely needs you to decide something right now (permission confirmation, an MCP dialog asking for input, etc.) | Reuses `warn_color`, default `E0AF68` |
+| Green, Done | A turn finished normally | Reuses `normal_color`, default `9ECE6A` |
+| Red, Error/interrupted | A turn was aborted by an API error (rate limit, server error, auth failure, etc.) | Reuses `critical_color`, default `F7768E` |
 
-圆点是插件自己用 GDI 画的（`Ellipse` + 纯色画刷），**不是**彩色 emoji 字符。早期版本
-用 🔵🟡🟢🔴 这类色块 emoji 做过，但 GDI 的文字绘制（`DrawTextW` 等）不认字体自带的
-调色板（emoji 用的 COLR/CPAL 彩色字体表），只按 `SetTextColor` 设的单一颜色画字形
-轮廓——结果所有颜色的 emoji 全部变成清一色的黑白轮廓，等于白做。真正的彩色字体
-渲染要走 DirectWrite/Direct2D 的专门接口，GDI 画文字拿不到，所以改成插件自己画图形：
-颜色完全由代码里指定的 RGB 值决定，和现有进度条（`FillRect` 画色块）用的是同一套
-已经在任务栏验证过能正确显示颜色的机制，不依赖字体或渲染路径。
+The dots are drawn by the plugin itself with GDI (`Ellipse` + a solid brush), **not**
+colored emoji characters. An earlier version used color-block emoji like 🔵🟡🟢🔴, but
+GDI's text drawing (`DrawTextW` and friends) doesn't understand a font's built-in color
+palette (the COLR/CPAL color table emoji use) — it only draws glyph outlines in whatever
+single color `SetTextColor` set, so every colored emoji came out as the same black-and-white
+outline, making the whole thing pointless. Real color-font rendering needs the dedicated
+DirectWrite/Direct2D APIs, which GDI text drawing can't reach, so the plugin draws its own
+shapes instead: the color is decided purely by the RGB value in code, using the same
+mechanism the existing progress bar (`FillRect`) already uses and that's been verified to
+render correctly on the taskbar — no dependency on fonts or the rendering path.
 
-"等待"和"已完成"直接复用了用量进度条已有的 `warn_color` / `normal_color` / `critical_color`
-三档配色（改一处两边都跟着变）；"思考中"和"空闲"没有对应的阈值色，单独给了
-`terminal_thinking_color` / `terminal_idle_color` 两个可配置项，见下文。
+"Waiting" and "Done" reuse the three usage-bar color tiers `warn_color` / `normal_color` /
+`critical_color` that already exist (change one place, both follow); "Thinking" and
+"Idle" don't map to an existing threshold color, so they get their own configurable
+`terminal_thinking_color` / `terminal_idle_color` — see below.
 
-如果当前没有任何终端在跑（没配 hooks，或者所有终端都关掉了），显示项不会空着，
-而是显示一行文字：`终端无AI应用`（英文环境下是 `No AI running`）。
+If no terminal is currently running (hooks not configured, or every terminal has been
+closed), the item doesn't sit empty — it shows a line of text: `No AI running` (in a
+Chinese environment this is `终端无AI应用`).
 
-鼠标移动到显示项上，鼠标提示里会列出每个终端的完整状态、所在目录（如果 hook 上报了
-`cwd`）、错误类型（仅出错状态）和会话 id 前 8 位，方便区分是哪个终端；图标超过
-`terminal_max_icons`（见下文）时，任务栏上只显示前若干个加一个 `+N`，完整列表仍然
-在鼠标提示里。状态目录每 5 秒才真正扫一次（内部节流），不会因为 TrafficMonitor
-每秒调用一次 `DataRequired` 就跟着每秒扫盘。
+Hovering over the item shows a tooltip listing every terminal's full status, its working
+directory (if the hook reported `cwd`), its error type (error state only), and the first
+8 characters of its session id, to help tell terminals apart; when the number of icons
+exceeds `terminal_max_icons` (see below), the taskbar only shows the first few plus a
+`+N`, with the full list still available in the tooltip. The status directory is only
+actually scanned once per second internally (throttled), independent of how often
+TrafficMonitor calls `DataRequired` (once per second).
 
-插件本身看不到 Claude Code 进程内部在做什么——这个信息需要 Claude Code 主动上报。
-上报方式是 Claude Code 的 hooks：每次 `SessionStart` / `UserPromptSubmit` /
-`Notification` / `Stop` / `StopFailure` / `SessionEnd` 事件发生时，调用一个小脚本，
-把状态写到
+The plugin itself can't see what's happening inside the Claude Code process — that
+information has to be reported by Claude Code proactively. It's reported via Claude
+Code's hooks: every time a `SessionStart` / `UserPromptSubmit` / `PreToolUse` /
+`Notification` / `Stop` / `StopFailure` / `SessionEnd` event fires, a small script is
+invoked that writes the state to
 
 ```
-<CLAUDE_CONFIG_DIR 或 %USERPROFILE%\.claude>\status\<session_id>.json
+<CLAUDE_CONFIG_DIR or %USERPROFILE%\.claude>\status\<session_id>.json
 ```
 
-插件定期扫描这个目录来统计终端数量与状态，不需要额外的网络请求。
+The plugin periodically scans this directory to count terminals and their states — no
+extra network requests needed.
 
-之所以专门监听 `StopFailure`：`Stop` 事件只在一轮回复**正常结束**时触发，本身不带
-任何错误信息；真正的失败信号（限流 `rate_limit`、服务端过载 `overloaded`、鉴权失败
-`authentication_failed` 等 `error_type`）只出现在 `StopFailure` 里，所以出错状态
-（🔴）必须单独监听这个事件才能拿到。
+Why `StopFailure` is watched specifically: `Stop` only fires when a turn ends
+**normally** and carries no error information at all; the actual failure signal
+(rate limit `rate_limit`, server overload `overloaded`, auth failure
+`authentication_failed`, etc. as `error_type`) only appears in `StopFailure`, so the
+error state (🔴) has to be picked up from that event specifically.
 
-`Notification` 不当成单一状态处理：它的 `notification_type` 取值很杂
-（`permission_prompt`、`idle_prompt`、`auth_success`、`elicitation_*`、
-`agent_completed`……），大部分根本不代表"需要你处理"。只有权限确认/MCP 弹窗
-这类才映射成黄色；`idle_prompt`（Claude Code 自己发的"你还在吗"提示）映射成
-灰色而不是黄色，因为它本质就是"终端空着没人管"，不是真在等你做决定——不然一个
-已经聊完的对话（🟢）放一会儿不动，就会被这条提示错误地顶回黄色。其余类型
-（`auth_success`/`elicitation_complete` 等）直接忽略，不改变当前颜色。
+`Notification` isn't treated as a single state: its `notification_type` values are quite
+varied (`permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_*`,
+`agent_completed`, …), and most of them don't actually mean "needs your attention" at
+all. Only permission confirmations / MCP dialogs map to yellow; `idle_prompt` (Claude
+Code's own "are you still there" nudge) maps to gray rather than yellow, because it's
+really just "the terminal is sitting idle," not genuinely waiting on a decision —
+otherwise a conversation that already finished (🟢) sitting untouched for a while would
+get incorrectly bumped back to yellow by this nudge. Other types
+(`auth_success`/`elicitation_complete` etc.) are ignored outright and don't change the
+current color.
 
-### 配置 hooks
+Watching `PreToolUse` specifically fixes a "stuck yellow, never turns blue" bug:
+approving a permission prompt (waiting, yellow) doesn't trigger a new
+`UserPromptSubmit` — it's not a new turn of user input, Claude just continues the
+current turn — so without this hook there was no event that could pull the state back
+from waiting to thinking; the dot would stay yellow until the turn actually ended and
+`Stop` turned it green, which was wrong for the whole time Claude was actively working
+again. `PreToolUse` fires right before a tool actually runs, which is guaranteed to
+happen once permission is granted, so it's used as the "yes, it's working again" signal.
 
-1. 仓库自带 `tools\claude-hook-status.ps1`，就是被 hook 调用的那个脚本，事件到状态的
-   映射写在脚本注释里。
-2. 在 Claude Code 的全局设置 `%USERPROFILE%\.claude\settings.json` 的 `hooks` 里加上
-   （把脚本路径换成本机的实际路径）：
+### Configuring the hooks
+
+1. The repo ships `tools\claude-hook-status.ps1`, the script the hooks call; the mapping
+   from event to state is documented in the script's comments.
+2. Add the following to the `hooks` section of Claude Code's global settings
+   `%USERPROFILE%\.claude\settings.json` (swap the script path for the actual path on
+   your machine):
 
 ```jsonc
 {
@@ -137,6 +172,9 @@ Claude 的额度用量与距离窗口重置的剩余时间：
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event UserPromptSubmit" } ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event PreToolUse" } ] }
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<repo>\\tools\\claude-hook-status.ps1\" -Event Notification" } ] }
@@ -154,26 +192,33 @@ Claude 的额度用量与距离窗口重置的剩余时间：
 }
 ```
 
-   `<repo>`换成本仓库的实际路径，例如
-   `D:\projects\1-test-space\6-rust\claude-usage-monitor`。如果 `settings.json`
-   里已经有其他 hooks，把对应事件数组里的 `hooks` 项追加进去即可，不用整段替换。
-3. 重启已经打开的 Claude Code 终端（hooks 只在新会话里生效）。
+   Replace `<repo>` with this repository's actual path, e.g.
+   `D:\projects\1-test-space\6-rust\claude-usage-monitor`. If `settings.json` already
+   has other hooks, just append this `hooks` entry into the matching event array —
+   no need to replace the whole block.
+3. Restart any already-open Claude Code terminals (hooks only take effect in new
+   sessions).
 
-配置好之后，每打开一个 Claude Code 终端，任务栏上就会多一个圆点；正常退出终端
-（`/exit` 或 Ctrl+D）会触发 `SessionEnd`，自动清掉对应的状态文件。
+Once configured, every Claude Code terminal you open adds a dot on the taskbar; exiting
+a terminal normally (`/exit` or Ctrl+D) triggers `SessionEnd`, which automatically
+cleans up the corresponding state file.
 
-如果终端是直接被叉掉窗口、或者进程被强杀，`SessionEnd` 根本来不及跑——这种情况
-插件不靠"等超时"：状态文件里记着这个终端所属进程的 PID（hook 脚本顺着进程树往上
-找到的，跳过 `powershell`/`cmd` 这类中转 shell），插件每次扫描时会用
-`OpenProcess`/`GetExitCodeProcess` 验证这个 PID 还活不活着，进程已经不在了就直接
-删掉状态文件，圆点马上消失，不用等 `terminal_stale_minutes`（默认 360 分钟）超时。
-只有旧版本写的、没有 `pid` 字段的状态文件才会退回超时兜底。
+If a terminal's window is closed directly, or its process is force-killed,
+`SessionEnd` doesn't get a chance to run — the plugin doesn't rely on waiting for a
+timeout in this case: the state file records the PID of the process that owns this
+terminal (found by the hook script walking up the process tree, skipping transient
+shells like `powershell`/`cmd`), and on every scan the plugin checks whether that PID
+is still alive via `OpenProcess`/`GetExitCodeProcess`; if the process is gone, the state
+file is deleted immediately and the dot disappears right away, without waiting for
+`terminal_stale_minutes` (default 360 minutes) to expire. Only state files written by an
+older version, which lack a `pid` field, fall back to the timeout-based cleanup.
 
-Task/Agent 工具调出去的子代理不算一个用户能看到的终端窗口，hook 脚本看到事件
-payload 里带 `agent_id`/`agent_type` 字段（子代理特有）就直接跳过、不写状态文件，
-不会因为跑了几次子任务就在任务栏多出圆点。
+Sub-agents spawned via the Task/Agent tool aren't a terminal window a user can see; the
+hook script skips writing a state file when it sees `agent_id`/`agent_type` in the event
+payload (which is specific to sub-agents), so running sub-tasks doesn't add extra dots
+to the taskbar.
 
-### 相关配置项
+### Related settings
 
 ```ini
 [display]
@@ -183,24 +228,25 @@ terminal_thinking_color=3B82F6
 terminal_idle_color=9E9E9E
 ```
 
-| 键 | 默认 | 说明 |
+| Key | Default | Description |
 | --- | --- | --- |
-| `terminal_stale_minutes` | `360` | 状态文件超过这么多分钟没更新就当作死会话忽略 |
-| `terminal_max_icons` | `12` | 任务栏最多显示这么多个图标，超出的部分只在鼠标提示里列出（图标后面会跟一个 `+N`） |
-| `terminal_thinking_color` | `3B82F6` | "正在思考"圆点的颜色，`RRGGBB` 十六进制 |
-| `terminal_idle_color` | `9E9E9E` | "空闲中"圆点的颜色，`RRGGBB` 十六进制 |
+| `terminal_stale_minutes` | `360` | A state file not updated for this many minutes is treated as a dead session and ignored |
+| `terminal_max_icons` | `12` | Maximum number of icons shown on the taskbar; anything beyond that only appears in the tooltip (a `+N` follows the icons) |
+| `terminal_thinking_color` | `3B82F6` | Color of the "Thinking" dot, `RRGGBB` hex |
+| `terminal_idle_color` | `9E9E9E` | Color of the "Idle" dot, `RRGGBB` hex |
 
-> "等待用户命令"用的是 `warn_color`、"已完成"用的是 `normal_color`、"出错"用的是
-> `critical_color`——这三个就是上面用量进度条的配色项，改了会同时影响两处。
+> "Waiting for input" uses `warn_color`, "Done" uses `normal_color`, "Error" uses
+> `critical_color` — these are the same color settings used by the usage progress bar
+> above; changing them affects both places.
 
 ---
 
-## 数据从哪来
+## Where the data comes from
 
 ```
 %USERPROFILE%\.claude\.credentials.json
         │
-        │  取出 claudeAiOauth.accessToken
+        │  reads claudeAiOauth.accessToken
         ▼
 GET https://api.anthropic.com/api/oauth/usage
         Authorization: Bearer <token>
@@ -214,49 +260,56 @@ GET https://api.anthropic.com/api/oauth/usage
   "extra_usage":      { "is_enabled": true, "monthly_limit": ..., ... } }
 ```
 
-若设置了环境变量 `CLAUDE_CONFIG_DIR`，则以该目录代替 `%USERPROFILE%\.claude`。
+If the `CLAUDE_CONFIG_DIR` environment variable is set, that directory is used instead
+of `%USERPROFILE%\.claude`.
 
-### 关于凭据的处理
+### How credentials are handled
 
-- access token 只在一次请求期间以局部变量存在，用完立即 `SecureZeroMemory` 清零。
-- token **不会**被写入配置文件、缓存或日志，也不会出现在鼠标提示里。
-- 插件只做一个 GET 请求，不修改任何 Claude Code 的文件。
-- token 过期时接口返回 401，插件会在提示里告知「请在 Claude Code 中重新登录」。
-  插件**不会**自己拿 refreshToken 去续期（与 cship 的行为一致），续期交给 Claude Code。
+- The access token only exists as a local variable for the duration of one request, and
+  is zeroed with `SecureZeroMemory` immediately after use.
+- The token is **never** written to a config file, cache, or log, and never shows up in
+  the tooltip.
+- The plugin only ever makes a single GET request; it never modifies any Claude Code
+  file.
+- When the token has expired, the API returns 401 and the plugin tells you in the
+  tooltip to "please log in again in Claude Code." The plugin **doesn't** refresh the
+  token itself using the refresh token (same behavior as cship) — renewal is left to
+  Claude Code.
 
 ---
 
-## 安装
+## Installation
 
-### 方式一：用现成的 DLL
+### Option 1: use the prebuilt DLL
 
-1. 把 `ClaudeUsageMonitor.dll` 复制到 TrafficMonitor 的 `plugins` 目录，例如
-   `D:\tools\TrafficMonitor\plugins\`。
-2. 重启 TrafficMonitor。
-3. 「选项」→「插件管理」里应能看到 *Claude 用量监控*。
-4. 在「显示设置」（主窗口 / 任务栏窗口分别设置）里勾选 `Claude 5小时用量`、`Claude 7天用量`。
+1. Copy `ClaudeUsageMonitor.dll` into TrafficMonitor's `plugins` directory, e.g.
+   `D:\tools\TrafficMonitor\plugins\`.
+2. Restart TrafficMonitor.
+3. You should see *Claude Usage Monitor* under Options → Plugin Management.
+4. In "Display settings" (set separately for the main window / taskbar window), check
+   `Claude 5-hour usage` and `Claude 7-day usage`.
 
-> DLL 的位数必须和 TrafficMonitor.exe 一致。本仓库默认构建 x64；32 位版本用
-> `.\build.ps1 -Arch x86`。
+> The DLL's bitness must match `TrafficMonitor.exe`'s. This repo builds x64 by default;
+> for the 32-bit build use `.\build.ps1 -Arch x86`.
 
-### 方式二：从源码构建并安装
+### Option 2: build from source and install
 
 ```powershell
-# 只需要 Visual Studio 2022 的 MSVC C++ 工具链，不需要 MFC / CMake / Node.js
+# Only the Visual Studio 2022 MSVC C++ toolchain is needed — no MFC / CMake / Node.js
 .\build.ps1 -Install D:\tools\TrafficMonitor\plugins
 ```
 
 ---
 
-## 配置
+## Configuration
 
-首次运行后，TrafficMonitor 的插件配置目录（通常是
-`<TrafficMonitor 所在目录>\plugins\`）下会生成 `ClaudeUsage.ini`，
-所有可调项都会被写回文件，改完重启 TrafficMonitor 生效。
+After the first run, `ClaudeUsage.ini` is generated in TrafficMonitor's plugin config
+directory (usually `<TrafficMonitor directory>\plugins\`), and every tunable value gets
+written back to it; edit it and restart TrafficMonitor for changes to take effect.
 
 ```ini
 [general]
-refresh_interval=300
+refresh_interval=60
 
 [display]
 custom_draw=1
@@ -273,240 +326,267 @@ seven_day_label=7d
 seven_day_format={pct}% ({reset})
 ```
 
-| 键 | 默认 | 说明 |
+| Key | Default | Description |
 | --- | --- | --- |
-| `refresh_interval` | `300` | 访问接口的间隔（秒），允许范围 60 ~ 3600 |
-| `custom_draw` | `1` | 是否由插件自绘。设为 `0` 则退回主程序排版，阈值颜色和进度条随之失效 |
-| `show_bar` | `1` | 是否在文字下方画进度条。显示区域太矮时会自动省略，优先保证文字可读 |
-| `warn_threshold` | `60` | 超过该百分比进度条转为警告色 |
-| `critical_threshold` | `80` | 超过该百分比进度条转为危险色 |
-| `bar_color_enabled` | `1` | 是否让进度条按阈值上色（绿/黄/红）。设为 `0` 关闭，进度条退回文字同色 |
-| `normal_color` | `9ECE6A` | 正常色（低于警告阈值时的进度条颜色），`RRGGBB` 十六进制 |
-| `warn_color` | `E0AF68` | 警告色，`RRGGBB` 十六进制 |
-| `critical_color` | `F7768E` | 危险色，`RRGGBB` 十六进制 |
+| `refresh_interval` | `60` | Interval (seconds) between API requests; allowed range 60 ~ 3600 |
+| `custom_draw` | `1` | Whether the plugin custom-draws the item. Set to `0` to fall back to the host program's layout, which loses threshold colors and the progress bar |
+| `show_bar` | `1` | Whether to draw the progress bar under the text. Automatically skipped if the display area is too short, to keep the text readable |
+| `warn_threshold` | `60` | Percentage above which the progress bar switches to the warning color |
+| `critical_threshold` | `80` | Percentage above which the progress bar switches to the critical color |
+| `bar_color_enabled` | `1` | Whether the progress bar is colored by threshold (green/yellow/red). Set to `0` to disable it and match the text color instead |
+| `normal_color` | `9ECE6A` | Normal color (progress bar color below the warning threshold), `RRGGBB` hex |
+| `warn_color` | `E0AF68` | Warning color, `RRGGBB` hex |
+| `critical_color` | `F7768E` | Critical color, `RRGGBB` hex |
 
-> 文字颜色始终使用主题的默认前景色，不会随阈值变化——白底配红/黄字容易糊成一团、看不清具体数值。
-> 阈值配色只体现在文字下方的细进度条上。
-| `*_label` | `5h` / `7d` | 显示项前缀。留空则只显示数值 |
-| `*_format` | `{pct}% ({reset})` | 数值格式串，占位符见下 |
+> The text color always uses the theme's default foreground color and never changes
+> with the threshold — a light background with red/yellow text tends to blur together
+> and become hard to read at a glance. Threshold coloring only shows up in the thin
+> progress bar under the text.
+| `*_label` | `5h` / `7d` | Prefix for the item. Leave empty to show only the value |
+| `*_format` | `{pct}% ({reset})` | Value format string, see placeholders below |
 
-格式串支持的占位符（与 cship 的 `five_hour_format` 一致）：
+Placeholders supported in the format string (matches cship's `five_hour_format`):
 
-| 占位符 | 含义 | 示例 |
+| Placeholder | Meaning | Example |
 | --- | --- | --- |
-| `{pct}` | 已用百分比，取整 | `21` |
-| `{remaining}` | 剩余百分比，取整 | `79` |
-| `{reset}` | 距离重置的剩余时间 | `4h19m` |
-| `{reset_at}` | 重置的本地时刻 | `19:42` 或 `08-19 09:00` |
+| `{pct}` | Percentage used, rounded | `21` |
+| `{remaining}` | Percentage remaining, rounded | `79` |
+| `{reset}` | Time remaining until reset | `4h19m` |
+| `{reset_at}` | Local wall-clock time of the reset | `19:42` or `08-19 09:00` |
 
-几个排版示例：
+A few layout examples:
 
 ```ini
-five_hour_format={pct}% ({reset})      ; 5h 21% (4h19m)   默认
-five_hour_format={pct}% · {reset}      ; 5h 21% · 4h19m   中点分隔，更窄
-five_hour_format={pct}%                ; 5h 21%           只看额度
-five_hour_format={remaining}% left     ; 5h 79% left      换成"还剩多少"的视角
-five_hour_format={pct}% →{reset_at}    ; 5h 21% →19:42    显示绝对重置时刻
+five_hour_format={pct}% ({reset})      ; 5h 21% (4h19m)   default
+five_hour_format={pct}% · {reset}      ; 5h 21% · 4h19m   middle-dot separator, narrower
+five_hour_format={pct}%                ; 5h 21%           just the quota
+five_hour_format={remaining}% left     ; 5h 79% left       "how much is left" framing
+five_hour_format={pct}% →{reset_at}    ; 5h 21% →19:42    show the absolute reset time
 ```
 
-任务栏上的宽度按格式串的**最坏情况**（`100%`、`23h59m`）计算，
-所以数值变化时显示项宽度是稳定的，不会左右抖动。
+The taskbar width is computed from the **worst case** of the format string (`100%`,
+`23h59m`), so the item's width stays stable as the value changes and doesn't jitter
+left and right.
 
-**为什么默认是 5 分钟而不是 1 分钟**：括号里的倒计时是插件在本地按 `resets_at`
-推算的，每秒都会刷新，并不依赖请求频率；只有百分比需要请求。而
-`/api/oauth/usage` 的限流相当紧（多个客户端共用同一账号时尤其容易撞上 HTTP 429），
-所以拉长间隔几乎没有体感损失，却能明显减少被限流的概率。
+**Why the default is 60 seconds and not something faster**: the countdown in parentheses
+is computed locally from `resets_at` and refreshes every second regardless of request
+frequency — only the percentage actually needs a request. And `/api/oauth/usage` is
+rate-limited fairly tightly (especially easy to hit when multiple clients share the same
+account), so keeping the interval from being too aggressive costs almost nothing in
+practice while noticeably lowering the odds of getting rate-limited.
 
 ---
 
-## 构建
+## Building
 
-前置条件：Visual Studio 2022，勾选「使用 C++ 的桌面开发」工作负载。
+Prerequisite: Visual Studio 2022 with the "Desktop development with C++" workload.
 
 ```powershell
-.\build.ps1                          # x64 Release，输出到 build\x64-Release\
-.\build.ps1 -Arch x86                # 32 位
-.\build.ps1 -Config Debug            # 带调试信息
-.\build.ps1 -Install <plugins 目录>  # 构建后直接安装
-.\build.ps1 -Arch all -Zip           # x64 + x86 各出一个发布用的 zip
+.\build.ps1                          # x64 Release, output to build\x64-Release\
+.\build.ps1 -Arch x86                # 32-bit
+.\build.ps1 -Config Debug            # with debug info
+.\build.ps1 -Install <plugins dir>   # install right after building
+.\build.ps1 -Arch all -Zip           # produce a release zip for both x64 and x86
 ```
 
-`-Zip` 会把 DLL 单独打包成 `build\ClaudeUsageMonitor-<版本>-<架构>.zip`
-（版本号取自 `ClaudeUsagePlugin.cpp` 里的 `TMI_VERSION`），压缩包里只有
-`ClaudeUsageMonitor.dll` 一个文件，解压直接扔进 `plugins` 目录就能用，
-方便原封不动传到 GitHub Release。配合 `-Arch all` 一次构建两个架构，
-分别产出两个 zip；`-Install` 则要求单一架构，不能跟 `-Arch all` 同用。
+`-Zip` packages the DLL alone into
+`build\ClaudeUsageMonitor-<version>-<arch>.zip` (the version comes from `TMI_VERSION`
+in `ClaudeUsagePlugin.cpp`); the zip contains only `ClaudeUsageMonitor.dll` — unzip it
+straight into the `plugins` directory and it works, convenient for uploading as-is to a
+GitHub Release. Combined with `-Arch all` it builds both architectures in one go and
+produces two zips; `-Install` requires a single architecture and can't be combined with
+`-Arch all`.
 
-产物：
+Build output:
 
-- `ClaudeUsageMonitor.dll` — 插件本体
-- `Probe.exe` — 命令行探针，见下
-- `HostTest.exe` — 宿主测试，见下
+- `ClaudeUsageMonitor.dll` — the plugin itself
+- `Probe.exe` — a command-line probe, see below
+- `HostTest.exe` — host test, see below
 
-也可以直接用 Visual Studio 打开 `ClaudeUsageMonitor.sln`（不含探针与宿主测试，
-那两个只在 `build.ps1` 里构建）。
+You can also open `ClaudeUsageMonitor.sln` directly in Visual Studio (it doesn't include
+the probe or host test, which are only built via `build.ps1`).
 
-没有任何第三方依赖：HTTPS 用系统自带的 WinHTTP，JSON 用仓库内约 300 行的
-只读解析器（`src/Json.*`）。使用 `/MT` 静态链接 CRT，因此目标机器不需要额外的
-运行库。
+No third-party dependencies: HTTPS uses the system's built-in WinHTTP, JSON uses a
+~300-line read-only parser in this repo (`src/Json.*`). The CRT is statically linked
+via `/MT`, so the target machine doesn't need any extra runtime.
 
 ---
 
-## 排错：Probe.exe
+## Troubleshooting: Probe.exe
 
-`Probe.exe` 跑的是和插件完全相同的取数与格式化代码，但输出到控制台，
-方便在不启动 TrafficMonitor 的情况下定位问题。它只打印用量数值，**不会打印 token**。
+`Probe.exe` runs the exact same fetch-and-format code as the plugin, but prints to the
+console, so you can debug without launching TrafficMonitor. It only prints usage
+numbers — **it never prints the token**.
 
 ```powershell
-# 离线自检：JSON 解析、ISO8601 解析、时间格式化
+# Offline self-test: JSON parsing, ISO8601 parsing, time formatting
 .\build\x64-Release\Probe.exe --selftest
 
-# 实际访问接口并打印用量
+# Actually hit the API and print usage
 .\build\x64-Release\Probe.exe
 ```
 
-### 预览排版与配色
+### Previewing layout and colors
 
-阈值颜色平时看不到——要等真的用到 60% / 80% 才会出现。设置环境变量
-`CLAUDE_USAGE_MONITOR_DEMO` 可以直接喂进指定的百分比，跳过接口访问：
+The threshold colors normally aren't visible — they only show up once you actually hit
+60% / 80%. Set the `CLAUDE_USAGE_MONITOR_DEMO` environment variable to feed in specific
+percentages directly, bypassing the API:
 
 ```powershell
-# 5 小时窗口 85%（危险色），7 天窗口 42%（正常色）
+# 5-hour window at 85% (critical color), 7-day window at 42% (normal color)
 $env:CLAUDE_USAGE_MONITOR_DEMO = "85,42"
 .\build\x64-Release\Probe.exe
 ```
 
-要在 TrafficMonitor 里预览，就把这个变量设成系统环境变量后重启 TrafficMonitor，
-调完格式和配色再删掉它。
+To preview it inside TrafficMonitor, set this as a system environment variable, restart
+TrafficMonitor, tune the format/colors, then remove it.
 
-常见输出与含义：
+Common outputs and what they mean:
 
-| 输出 | 原因与处理 |
+| Output | Cause and fix |
 | --- | --- |
-| `未找到凭据文件` | 还没在 Claude Code 里登录过，或 `CLAUDE_CONFIG_DIR` 指向了别处 |
-| `凭据文件中读不到 claudeAiOauth.accessToken` | 凭据格式不符合预期，在 Claude Code 里重新登录 |
-| `访问令牌已失效（HTTP 401）` | token 过期，在 Claude Code 里重新登录即可 |
-| `请求过于频繁（HTTP 429）` | 接口限流，见下节 |
-| `无法连接到 api.anthropic.com` | 网络 / 代理问题。插件走 WinHTTP，会使用系统代理设置 |
+| Credentials file not found | You haven't logged into Claude Code yet, or `CLAUDE_CONFIG_DIR` points somewhere else |
+| Can't read claudeAiOauth.accessToken from the credentials file | Credentials file format doesn't match what's expected — log into Claude Code again |
+| Access token expired (HTTP 401) | Token expired, just log into Claude Code again |
+| Too many requests (HTTP 429) | API is rate-limited, see the next section |
+| Cannot connect to api.anthropic.com | Network/proxy issue. The plugin uses WinHTTP, which respects the system proxy settings |
 
-### 关于 HTTP 429
+### About HTTP 429
 
-`/api/oauth/usage` 的限流发生在**鉴权之前**：即使不带任何 `Authorization` 头，
-被限流时也会直接返回
+`/api/oauth/usage` rate-limits **before authentication**: even with no `Authorization`
+header at all, a rate-limited request just returns
 
 ```json
 { "error": { "type": "rate_limit_error", "message": "Rate limited. Please try again later." } }
 ```
 
-也就是说这跟你的 token 是否有效无关，而是当前出口 IP / 账号在这个端点上的
-配额被打满了（同一账号上跑着 Claude Code、cship、其他用量脚本时都会消耗它）。
+In other words this has nothing to do with whether your token is valid — it means the
+quota for this endpoint, tied to your current egress IP / account, is used up (running
+Claude Code, cship, and other usage scripts on the same account all draw from it).
 
-这个端点的配额很紧，**在 TrafficMonitor 已经加载着本插件的时候再跑 `Probe.exe`，
-探针经常会拿到 429**——两者共用同一个账号配额，而插件那边通常已经握着刚取到的
-数据了。想用探针排查时先退出 TrafficMonitor，或者直接看插件的鼠标提示。
-可以这样确认它与本插件无关：
+This endpoint's quota is tight, and **running `Probe.exe` while TrafficMonitor already
+has this plugin loaded often gets a 429** — they share the same account quota, and the
+plugin side is usually already holding onto data it just fetched. If you want to debug
+with the probe, quit TrafficMonitor first, or just check the plugin's tooltip directly.
+You can confirm this has nothing to do with the plugin like this:
 
 ```powershell
 Invoke-WebRequest https://api.anthropic.com/api/oauth/usage -SkipHttpErrorCheck | Select-Object StatusCode
 ```
 
-若不带凭据也返回 429，就只能等配额恢复。插件在这种情况下会自动退避重试
-（30 秒起步逐次翻倍，上限 10 分钟），并保留上一次成功取到的数据继续显示。
+If it returns 429 even without credentials, all you can do is wait for the quota to
+recover. In this situation the plugin automatically backs off and retries (starting at
+30 seconds, doubling each time, capped at 10 minutes), while keeping the last
+successfully fetched data on display.
 
-个别代理/网关会按 User-Agent 拦截请求，可以用环境变量覆盖：
+Some proxies/gateways block requests based on User-Agent; you can override it via an
+environment variable:
 
 ```powershell
 $env:CLAUDE_USAGE_MONITOR_UA = "ureq/3.1.2"
 ```
 
-（默认是 `TrafficMonitor-ClaudeUsage/1.0`。）
+(Default is `TrafficMonitor-ClaudeUsage/1.0`.)
 
 ---
 
-## 验证：HostTest.exe
+## Verification: HostTest.exe
 
-`HostTest.exe` 用和 TrafficMonitor **完全相同的方式**加载插件——`LoadLibrary` +
-`GetProcAddress("TMPluginGetInstance")`，然后按主程序的调用顺序驱动一遍完整生命周期。
-它不链接插件的任何源码，因此能真实验证导出函数、虚表布局和调用约定。
+`HostTest.exe` loads the plugin **exactly the way TrafficMonitor does** — `LoadLibrary`
++ `GetProcAddress("TMPluginGetInstance")` — then drives it through a full lifecycle in
+the same order the host program does. It doesn't link against any of the plugin's
+source code, so it genuinely verifies the exported functions, vtable layout, and
+calling convention.
 
 ```powershell
 .\build\x64-Release\HostTest.exe .\build\x64-Release\ClaudeUsageMonitor.dll
 ```
 
-覆盖的内容：接口版本为 7、六项插件信息均非空、两个显示项的名称/ID/标签/示例文本、
-显示项 ID 只含字母数字、越界与负索引返回空指针、插件命令、模拟 15 秒的每秒
-`DataRequired` 循环、鼠标提示内容、双击返回 1 而右键返回 0、
-`ShowOptionsDialog` 返回 `OR_OPTION_NOT_PROVIDED`。
+What it covers: interface version is 7, all six pieces of plugin info are non-empty, the
+name/ID/label/sample text of both display items, item IDs contain only alphanumerics,
+out-of-range and negative indices return null, plugin commands, a simulated 15-second
+per-second `DataRequired` loop, tooltip content, double-click returns 1 while right-click
+returns 0, `ShowOptionsDialog` returns `OR_OPTION_NOT_PROVIDED`.
 
-自绘部分借助上面的演示模式喂入确定的百分比，然后把显示项真的画到一张内存位图上，
-在像素层面校验：宽度合理、`hDC` 为空时返回 0 让主程序回退、确实往画布上写了内容、
-底部进度条铺满整行、出现了预期的阈值颜色（85% 出危险色、65% 出警告色）、
-以及 `DrawItem` 返回后没有弄脏 DC 里选中的字体。深色和浅色两种主题都跑一遍。
+The custom-drawing part uses the demo mode above to feed in fixed percentages, then
+actually draws the item onto an in-memory bitmap and verifies it pixel by pixel: the
+width is reasonable, a null `hDC` returns 0 so the host program falls back correctly,
+something was actually written to the canvas, the bottom progress bar fills the full
+row, the expected threshold colors appear (85% shows the critical color, 65% shows the
+warning color), and `DrawItem` doesn't leave the DC's selected font dirty after
+returning. Both dark and light themes are exercised.
 
 ---
 
-## 实现要点
+## Implementation notes
 
 ```
 src/
-  Json.h / Json.cpp              只读 JSON 解析器（无外部依赖）
-  TimeUtil.h / TimeUtil.cpp      ISO8601 解析、剩余时间格式化（对齐 cship）
-  UsageApi.h / UsageApi.cpp      读凭据 + WinHTTP 请求 + 响应解析 + 演示模式
-  UsageService.h / UsageService.cpp   后台取数线程、快照、退避重试
-  DisplayConfig.h / DisplayConfig.cpp 排版与配色配置、格式串占位符替换
-  TerminalStatus.h / TerminalStatus.cpp 扫描 hooks 写的终端状态文件
-  ClaudeUsagePlugin.h / .cpp     ITMPlugin / IPluginItem 实现与导出函数
-  DllMain.cpp                    模块 PIN，避免卸载时线程悬空
+  Json.h / Json.cpp              Read-only JSON parser (no external dependencies)
+  TimeUtil.h / TimeUtil.cpp      ISO8601 parsing, remaining-time formatting (matches cship)
+  UsageApi.h / UsageApi.cpp      Reading credentials + WinHTTP request + response parsing + demo mode
+  UsageService.h / UsageService.cpp   Background fetch thread, snapshot, retry backoff
+  DisplayConfig.h / DisplayConfig.cpp Layout/color config, format-string placeholder substitution
+  TerminalStatus.h / TerminalStatus.cpp Scans the terminal state files written by hooks
+  ClaudeUsagePlugin.h / .cpp     ITMPlugin / IPluginItem implementation and exported functions
+  DllMain.cpp                    Pins the module so no thread is left dangling on unload
 include/
-  PluginInterface.h              TrafficMonitor 官方插件接口（API version 7）
+  PluginInterface.h              TrafficMonitor's official plugin interface (API version 7)
 tools/
-  Probe.cpp                      命令行探针与离线自检
-  HostTest.cpp                   宿主测试（LoadLibrary 驱动插件全生命周期）
-  claude-hook-status.ps1         Claude Code hook 脚本，上报终端状态（见「Claude 终端状态」一节）
+  Probe.cpp                      Command-line probe and offline self-test
+  HostTest.cpp                   Host test (drives the plugin's full lifecycle via LoadLibrary)
+  claude-hook-status.ps1         Claude Code hook script, reports terminal status (see "Claude terminal status" above)
 ```
 
-几个刻意的设计选择：
+A few deliberate design choices:
 
-- **绝不在 `DataRequired` 里发网络请求。** 该函数由 TrafficMonitor 的界面线程每秒调用，
-  阻塞它会直接卡住主程序。网络请求跑在独立线程里，`DataRequired` 只读内存快照，
-  并重新计算一次倒计时文本。
-- **取数失败时保留上一次的数据继续显示**，只在鼠标提示里说明当前取数失败，
-  避免网络抖动导致任务栏数字反复闪成 `--`。
-- **DllMain 里把模块 PIN 住**。插件持有一个常驻线程，若主程序在运行期间
-  `FreeLibrary` 掉本 DLL，线程会执行到已卸载的代码上而崩溃。PIN 之后
-  DLL 只随进程一起退出，也就不需要在 DllMain 里等待线程结束
-  （那样会持有加载器锁，容易死锁）。
-- **自绘的文字必须用 `DrawTextW`**。TrafficMonitor 会 patch 插件 DLL 导入表里
-  user32 的 `DrawText` 系列函数，任务栏的 Direct2D 渲染依赖这个拦截点；
-  改用 `TextOut` / `ExtTextOut` 在 D2D 模式下画不出来。
-  同理，宽度也用 `DrawTextW(DT_CALCRECT)` 测——主程序自己的代码里就注明了
-  `GetTextExtent` 拿到的是理论宽度、不够准。
-- **自绘时的基准文字颜色取自 `EI_VALUE_TEXT_COLOR`**。主程序在每次 `DrawItem`
-  之前通过 `OnExtenedInfo` 把当前皮肤的颜色以十进制 `COLORREF` 字符串传进来。
-  之所以不直接读 DC 的 `GetTextColor`：任务栏走 Direct2D 时，`DrawItem` 拿到的是
-  临时的 GDI DC，上面并没有设过文字颜色。
-- **失败退避**：30 秒起步，逐次翻倍，上限 10 分钟；服务端给了 `Retry-After` 就照它来。
-- **显示项 ID 使用 `ClaudeUsageOAuth5h` / `ClaudeUsageOAuth7d`**，与其他 Claude 相关
-  插件区分开，可以共存。
+- **Never make a network request inside `DataRequired`.** That function is called by
+  TrafficMonitor's UI thread once per second; blocking it would freeze the whole host
+  program. The network request runs on its own thread, and `DataRequired` only reads the
+  in-memory snapshot and recomputes the countdown text.
+- **Keep showing the previous data if a fetch fails**, only noting the failure in the
+  tooltip, to avoid the taskbar number flickering to `--` on every network hiccup.
+- **The module is pinned in `DllMain`.** The plugin holds a long-lived thread; if the
+  host program calls `FreeLibrary` on this DLL while it's running, that thread would
+  execute code that's already been unloaded and crash. Pinning means the DLL only exits
+  along with the process, so there's no need to wait for the thread to finish inside
+  `DllMain` (which would hold the loader lock and risk a deadlock).
+- **Custom-drawn text must use `DrawTextW`.** TrafficMonitor patches the `DrawText`
+  family of functions in the plugin DLL's user32 import table — the taskbar's Direct2D
+  rendering depends on this interception point; using `TextOut`/`ExtTextOut` instead
+  produces nothing in D2D mode. Likewise, width is measured with
+  `DrawTextW(DT_CALCRECT)` — the host program's own code notes that `GetTextExtent`
+  gives only a theoretical width that isn't accurate enough.
+- **The baseline text color for custom drawing comes from `EI_VALUE_TEXT_COLOR`.** The
+  host program passes the current skin's color as a decimal `COLORREF` string via
+  `OnExtenedInfo` before every `DrawItem` call. It's not read directly from the DC's
+  `GetTextColor` because when the taskbar is running in Direct2D mode, the `DrawItem`
+  call receives a temporary GDI DC that never had a text color set on it.
+- **Failure backoff**: starts at 30 seconds, doubles each time, capped at 10 minutes;
+  follows the server's `Retry-After` if one is given.
+- **Display item IDs are `ClaudeUsageOAuth5h` / `ClaudeUsageOAuth7d`**, distinct from
+  other Claude-related plugins so they can coexist.
 
 ---
 
-## 与 bemaru/trafficmonitor-ai-usage-plugin 的区别
+## Differences from bemaru/trafficmonitor-ai-usage-plugin
 
-两者都在 TrafficMonitor 上显示 Claude 用量，但取数路径完全不同：
+Both show Claude usage on TrafficMonitor, but they fetch data in completely different
+ways:
 
-| | 本插件（cship 方式） | bemaru 插件 |
+| | This plugin (cship approach) | bemaru plugin |
 | --- | --- | --- |
-| 数据来源 | Anthropic OAuth 用量接口 | claude.ai 网页 + Cookie |
-| 运行时依赖 | 无 | Node.js 22+、Edge/Chrome |
-| 登录 | 复用 Claude Code 凭据 | 需要单独跑一次浏览器登录 |
-| 组成 | 单个 DLL | DLL + PowerShell + Node 应用 + 浏览器配置目录 |
-| Codex 用量 | 不支持 | 支持 |
+| Data source | Anthropic OAuth usage API | claude.ai web page + cookies |
+| Runtime dependencies | None | Node.js 22+, Edge/Chrome |
+| Login | Reuses Claude Code credentials | Requires a separate browser login run |
+| Composition | Single DLL | DLL + PowerShell + Node app + browser profile directory |
+| Codex usage | Not supported | Supported |
 
-两个插件的 DLL 名与显示项 ID 都不同，可以同时安装。
+The two plugins use different DLL names and display item IDs, so they can be installed
+side by side.
 
 ---
 
-## 许可
+## License
 
 MIT
