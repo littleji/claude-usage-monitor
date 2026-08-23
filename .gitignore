@@ -4,3 +4,4 @@ build/
 *.aps
 *.suo
 test/
+*.log
