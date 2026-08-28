@@ -134,8 +134,13 @@ if ($stdin) {
 }
 Write-DebugLog "stdin_len=$($stdin.Length) parsed=$($null -ne $payload) parse_error=$parseError"
 
-# 子代理事件不代表一个用户看得见的终端窗口，跳过，不写文件
-if ($payload -and ($payload.agent_id -or $payload.agent_type)) {
+# 子代理事件不代表一个用户看得见的终端窗口——但只有 agent_type 是显式的
+# 子代理标记，单凭 agent_id 不能判。某些三方网关会让普通事件也带 agent_id
+# （用于内部路由/计费），老版本只要看到 agent_id 就跳过，结果三方模型下
+# 所有事件被一律跳过，圆点根本不出现。现在只看 agent_type，并依赖 C++ 端
+# 按 pid 去重（同进程的子代理和主会话共享 pid，去重时主会话因为有 cwd 会被
+# 选中，子代理自然被顶掉），不用在这里提前过滤。
+if ($payload -and $payload.agent_type) {
     Write-DebugLog "skip: subagent event (agent_id=$($payload.agent_id) agent_type=$($payload.agent_type))"
     exit 0
 }
@@ -155,6 +160,55 @@ $configDir = $env:CLAUDE_CONFIG_DIR
 if (-not $configDir) { $configDir = Join-Path $env:USERPROFILE '.claude' }
 $statusDir = Join-Path $configDir 'status'
 New-Item -ItemType Directory -Force -Path $statusDir | Out-Null
+
+# 三方网关偶尔会吞掉 stop_reason,客户端识别不到一轮结束,Stop 事件不发,
+# 状态文件就卡在 thinking。靠单独的计划任务去扫会每分钟弹一个 powershell
+# 窗口——直接挂在这个 hook 里:每次事件触发(用户提交 / 工具执行 / 通知等)
+# 顺手扫一遍状态目录,超过 -StaleThinkingMinutes 分钟还在 thinking 的就翻
+# done。零额外进程,终端不闪。代价是空闲终端(没有任何事件)里的卡死
+# thinking 不会被翻——但用户下一次发新 prompt 时这条 hook 必然触发,
+# 上一轮的卡死也会一起被处理掉,所以覆盖绝大多数场景。
+function Cleanup-StaleThinking {
+    param([string]$StatusDir, [int]$StaleMinutes)
+    $thresholdSec = $StaleMinutes * 60
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    Get-ChildItem -Path $StatusDir -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $raw = Get-Content -Path $_.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $raw) { return }
+        $obj = $null
+        try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { return }
+        if ($obj.status -ne 'thinking') { return }
+        if (($now - [int]$obj.updated_at) -le $thresholdSec) { return }
+
+        $ownerPid = 0
+        if ($obj.pid) { $ownerPid = [int]$obj.pid }
+        # 进程已死:终端被叉掉 / 进程被强杀,直接删文件,圆点立刻消失
+        if ($ownerPid -gt 0) {
+            $alive = $true
+            try {
+                $proc = [System.Diagnostics.Process]::GetProcessById($ownerPid)
+                $alive = -not $proc.HasExited
+            } catch { $alive = $false }
+            if (-not $alive) {
+                Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+                return
+            }
+        }
+        # 翻 done,不翻 error——客户端没报错才走到 Stop,Stop 不发大概率是网关
+        # 吞了 stop_reason,不是真出错;真出错 StopFailure 已经写了 error
+        $newRecord = [ordered]@{
+            session_id    = $obj.session_id
+            status        = 'done'
+            updated_at    = $now
+            cwd           = $obj.cwd
+            error_type    = $obj.error_type
+            pid           = $ownerPid
+            watchdog_flip = $true
+        }
+        ($newRecord | ConvertTo-Json -Compress) | Set-Content -Path $_.FullName -Encoding utf8 -NoNewline
+    }
+}
+Cleanup-StaleThinking -StatusDir $statusDir -StaleMinutes 5
 
 # 文件名只用会话 id，不掺目录名之类的东西，避免非法字符
 $safeId = ($sessionId -replace '[^A-Za-z0-9\-]', '_')

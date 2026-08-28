@@ -37,7 +37,18 @@ param(
 
     [switch]$SkipProbe,
 
-    [switch]$Zip
+    [switch]$Zip,
+
+    # 配合 -Install 使用：把 tools\claude-hook-status.ps1 拷到安装目录并在
+    # %USERPROFILE%\.claude\settings.json 里注册七个 hooks（幂等，已存在则跳过）。
+    [switch]$SetupHooks,
+
+    # 配合 -Install 使用：把 tools\claude-thinking-watchdog.ps1 拷到安装目录
+    # 并注册每分钟执行的计划任务。一般三方模型用户不需要——hook 脚本本身已经
+    # 带 piggyback cleanup，下次事件触发时自动翻 stale thinking。仅当需要
+    # 「终端完全空闲、无新事件时也主动清理」才开这个开关；开了会每分钟闪一次
+    # powershell 窗口（除非额外加 -WindowStyle Hidden）。
+    [switch]$SetupWatchdog
 )
 
 $ErrorActionPreference = 'Stop'
@@ -132,6 +143,112 @@ function Import-VcVars {
         }
     }
     Write-Host "MSVC 环境就绪：$Architecture" -ForegroundColor DarkGray
+}
+
+# 把 hooks 注册进 %USERPROFILE%\.claude\settings.json：合并写入而不是覆盖——
+# 已经有的事件 / 其他来源的 hooks 全保留。幂等：脚本路径匹配且事件名匹配就
+# 当成已经装过，直接跳过；路径不一致（旧路径迁移）才追加新的并打 warning。
+function Install-ClaudeHooks {
+    param(
+        [string]$ScriptPath,
+        [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json')
+    )
+    $settingsDir = Split-Path $settingsPath -Parent
+    if (-not (Test-Path $settingsDir)) {
+        New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
+    }
+
+    if (Test-Path $settingsPath) {
+        $raw = Get-Content -Path $settingsPath -Raw -Encoding utf8
+        try {
+            $settings = $raw | ConvertFrom-Json -AsHashtable
+        } catch {
+            throw "settings.json 不是合法的 JSON：$settingsPath。请先备份再修正格式后重试。"
+        }
+    } else {
+        $settings = @{}
+    }
+    if (-not $settings.ContainsKey('hooks')) { $settings['hooks'] = @{} }
+
+    # 修复旧版本写错的占位符：build.ps1 的某个中间版本在 PowerShell 双引号
+    # 字符串里写了 "{{Event}}"，本意是像 .NET 那样转义成 "{Event}"，但 PS
+    # 双引号里 {} 是字面字符，结果写进 settings.json 的是 "-Event {Event}"，
+    # Claude Code 把整个字符串作为参数原样传进来，脚本收到的事件名变成
+    # 字面 "{Event}"，$statusMap 里查不到，整条链路就废了。检测并替换掉：
+    # 对每个事件，把 command 里残留的 "{Event}" 换成当前事件名。
+    foreach ($ev in @('SessionStart','UserPromptSubmit','PreToolUse','Notification','Stop','StopFailure','SessionEnd')) {
+        if (-not $settings['hooks'].ContainsKey($ev)) { continue }
+        foreach ($group in $settings['hooks'][$ev]) {
+            if (-not $group.hooks) { continue }
+            foreach ($h in $group.hooks) {
+                if ($h.command -and $h.command -like '*{-Event}*') {
+                    $h.command = $h.command -replace '\{Event\}', $ev
+                }
+            }
+        }
+    }
+
+    $events = 'SessionStart','UserPromptSubmit','PreToolUse','Notification','Stop','StopFailure','SessionEnd'
+    # {Event} 是占位符,后面 -replace 把它换成真实事件名。PowerShell 双引号
+    # 字符串里 {} 是字面字符,不用像 format-string 那样写 {{}}
+    $psCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Event {Event}"
+
+    $added = 0; $skipped = 0
+    foreach ($ev in $events) {
+        if (-not $settings['hooks'].ContainsKey($ev)) { $settings['hooks'][$ev] = @() }
+        $entry = [ordered]@{
+            hooks = @(
+                [ordered]@{
+                    type    = 'command'
+                    command = $psCommand -replace '\{Event\}', $ev
+                }
+            )
+        }
+        # 匹配：已存在任何一条 hook 的 command 同时含此脚本路径和此事件名 -> 跳过
+        $already = $false
+        foreach ($group in $settings['hooks'][$ev]) {
+            if (-not $group.hooks) { continue }
+            foreach ($h in $group.hooks) {
+                if ($h.command -and $h.command -like "*`"$ScriptPath`"*" -and $h.command -like "*-Event $ev*") {
+                    $already = $true; break
+                }
+            }
+            if ($already) { break }
+        }
+        if ($already) {
+            $skipped++
+            continue
+        }
+        $settings['hooks'][$ev] += ,$entry
+        $added++
+    }
+
+    # hashtable 转回 JSON：用深度 -2 让 @{} 渲染成 {}，@() 渲染成 []
+    $json = $settings | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($settingsPath, $json, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Hooks: 新增 $added 个事件, 跳过 $skipped 个已存在" -ForegroundColor Green
+    Write-Host "请重启已开的 Claude Code 终端 —— hooks 只在新会话里生效。" -ForegroundColor Yellow
+}
+
+function Install-ClaudeWatchdog {
+    param([string]$ScriptPath)
+
+    $taskName = 'ClaudeThinkingWatchdog'
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "已移除旧的 $taskName 任务" -ForegroundColor DarkGray
+    }
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+    Register-ScheduledTask -TaskName $taskName `
+        -Action $action -Trigger $trigger `
+        -RunLevel Limited `
+        -Description 'Flip stuck Claude thinking status to done' | Out-Null
+    Write-Host "看门狗已注册：$taskName（每分钟一次，路径 $ScriptPath）" -ForegroundColor Green
 }
 
 try {
@@ -240,6 +357,19 @@ if ($Install) {
     Copy-Item $dllPath $target -Force
     Write-Host "已安装到 $target" -ForegroundColor Green
     Write-Host "请重启 TrafficMonitor 后在「选项 -> 插件管理」中启用。" -ForegroundColor Yellow
+
+    if ($SetupHooks) {
+        # PS1 装到 DLL 同目录，让 hooks 自包含；升级重跑会顺手覆盖到最新版
+        $ps1Dest = Join-Path $Install 'claude-hook-status.ps1'
+        Copy-Item (Join-Path $root 'tools\claude-hook-status.ps1') $ps1Dest -Force
+        Install-ClaudeHooks -ScriptPath $ps1Dest
+    }
+
+    if ($SetupWatchdog) {
+        $wdDest = Join-Path $Install 'claude-thinking-watchdog.ps1'
+        Copy-Item (Join-Path $root 'tools\claude-thinking-watchdog.ps1') $wdDest -Force
+        Install-ClaudeWatchdog -ScriptPath $wdDest
+    }
 }
 
 }   # foreach ($buildArch in $archList)

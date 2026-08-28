@@ -5,3 +5,5 @@ build/
 *.suo
 test/
 *.log
+.claude
+.serena

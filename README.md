@@ -158,6 +158,48 @@ the state file records the terminal's PID and the plugin drops it as soon as tha
 is gone. Sub-agents spawned by the Task tool are deliberately skipped, so background tasks
 don't add phantom dots.
 
+Don't want to edit settings.json by hand? The build script can do it. Quit TrafficMonitor
+first, then:
+
+```powershell
+cd <repo>
+.\build.ps1 -Install 'D:\tools\TrafficMonitor\plugins' -SetupHooks -SetupWatchdog
+```
+
+`-SetupHooks` copies `tools\claude-hook-status.ps1` next to the DLL and merges the seven
+hooks into `%USERPROFILE%\.claude\settings.json` (idempotent — existing entries for this
+script are skipped, other hooks preserved). `-SetupWatchdog` registers a per-minute
+scheduled task — only needed for third-party model users.
+
+### When routing through a third-party model (self-hosted gateway / OpenRouter / GLM / Kimi / etc.)
+
+Against the official Anthropic API, `Stop` fires almost every time and dots cycle through
+colors cleanly. Third-party gateways occasionally swallow `stop_reason` or close the
+stream early, so the client never recognises the end of the turn and never emits `Stop` —
+the dot sticks on blue forever. `claude-hook-status.ps1` already does piggyback cleanup:
+each time any hook event fires it scans the status directory and flips any thinking
+state older than 5 minutes to done. No extra process, no terminal flash. Next time
+you type a prompt in that terminal, the previous stuck turn gets cleaned up.
+
+**No separate scheduled task needed.** `-SetupWatchdog` is for the rare case where a
+terminal stays completely idle (no events at all) yet you still want stuck thinking
+to be auto-flipped — usually third-party model users don't need it:
+
+```powershell
+# Optional install / remove of the scheduled watchdog
+Register-ScheduledTask -TaskName 'ClaudeThinkingWatchdog' `
+    -Action (New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<install>\claude-thinking-watchdog.ps1"') `
+    -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)) `
+    -RunLevel Limited
+Unregister-ScheduledTask -TaskName 'ClaudeThinkingWatchdog' -Confirm:$false
+```
+
+`-WindowStyle Hidden` suppresses the per-minute PowerShell window flash — but hidden
+windows can swallow errors on some PowerShell versions, so it's not the default.
+
 Curious why each of those seven events is needed, or why the dots are hand-drawn with GDI
 instead of emoji? See **[docs/internals.md](docs/internals.md)**.
 

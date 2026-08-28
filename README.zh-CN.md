@@ -146,6 +146,44 @@ hooks 的用途：每次事件触发时，一个小脚本把当前会话的状�
 PID，插件发现进程没了就立刻把它去掉。Task 工具派生的子智能体会被有意跳过，
 跑后台任务不会多出圆点。
 
+不想手改 settings.json？build 脚本可以代劳。先关掉 TrafficMonitor，然后:
+
+```powershell
+cd <repo>
+.\build.ps1 -Install 'D:\tools\TrafficMonitor\plugins' -SetupHooks -SetupWatchdog
+```
+
+`-SetupHooks` 把 `tools\claude-hook-status.ps1` 拷到安装目录并把七个 hooks 合并
+写入 `%USERPROFILE%\.claude\settings.json`(已存在的不重复加,其他来源的 hooks
+保留);`-SetupWatchdog` 注册每分钟执行一次的计划任务,见下面三方模型小节。
+
+### 用三方模型时（自建网关 / OpenRouter / GLM / Kimi 等）
+
+官方 Anthropic API 下 `Stop` 几乎必然触发，圆点颜色流转正常。三方网关偶尔会
+吞掉 `stop_reason` 或提前关流，客户端识别不到「一轮结束」就不发 `Stop`，
+圆点卡在蓝色一直不变绿。`claude-hook-status.ps1` 自身已经带 piggyback 看门狗：
+每次 hook 事件触发时顺手扫一遍状态目录，thinking 超 5 分钟没更新就翻 done。
+零额外进程，终端不闪——下次你在终端敲下一条 prompt 时，上一轮卡死的 thinking
+就被处理掉。
+
+**不需要再单独装计划任务**。`-SetupWatchdog` 是给极端场景准备的（终端长时间
+挂着没新事件、还希望卡死的 thinking 主动变 done），一般三方模型用户都用不上：
+
+```powershell
+# 装/卸计划任务（可选）
+Register-ScheduledTask -TaskName 'ClaudeThinkingWatchdog' `
+    -Action (New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<install>\claude-thinking-watchdog.ps1"') `
+    -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)) `
+    -RunLevel Limited
+Unregister-ScheduledTask -TaskName 'ClaudeThinkingWatchdog' -Confirm:$false
+```
+
+`-WindowStyle Hidden` 抑制每分钟一次的 powershell 窗口闪烁——但隐藏窗口下
+某些 PowerShell 版本会丢输出，可能报错窗口被吞掉，所以默认不开。
+
 想知道为什么这七个事件缺一不可、以及圆点为什么是 GDI 画出来而不是 emoji 字符？
 见 **[docs/internals.zh-CN.md](docs/internals.zh-CN.md)**。
 
