@@ -3,6 +3,11 @@
     Claude Code hook 脚本：把当前会话的状态写到 ClaudeUsageMonitor 插件能读到的地方。
 
 .DESCRIPTION
+    注意：默认安装用的是同等功能的原生版本 claude-hook-status.exe
+    （tools/ClaudeHookStatus.cpp）。PostToolUse 每次工具调用都会触发，powershell
+    每次启动要几百毫秒，会明显拖慢 Claude Code；本脚本只作为用不了 exe 时的备选
+    保留。改动事件映射规则时两边要同步改。
+
     配合 ClaudeUsageMonitor 插件的"终端状态"显示项使用。插件本身看不到 Claude
     Code 内部在做什么，需要 Claude Code 通过 hooks 主动上报——本脚本就是被
     hooks 调用的那个命令，每次事件发生时把状态写到
@@ -23,22 +28,28 @@
     后续事件复用已写入文件里的 PID，避免每条消息都发一次 WMI 查询拖慢响应。
 
     -Event 由 settings.json 里的 hook 配置传入，取值与 Claude Code 的 hook
-    事件名一致：SessionStart / UserPromptSubmit / PreToolUse / Notification /
-    Stop / StopFailure / SessionEnd。事件到状态的映射：
-        SessionStart      -> idle      （会话刚打开，等待第一条输入）
-        UserPromptSubmit  -> thinking  （已提交请求，正在处理）
-        PreToolUse        -> thinking  （工具即将执行，正在处理；见下方说明）
-        Stop              -> done      （一轮回复正常结束）
-        StopFailure       -> error     （一轮回复因 API 错误异常终止）
-        SessionEnd        -> 删除状态文件（会话正常退出）
+    事件名一致：SessionStart / UserPromptSubmit / PostToolUse /
+    PostToolUseFailure / Notification / Stop / StopFailure / SessionEnd。
+    事件到状态的映射：
+        SessionStart       -> idle      （会话刚打开，等待第一条输入）
+        UserPromptSubmit   -> thinking  （已提交请求，正在处理）
+        PostToolUse        -> thinking  （工具执行完，Claude 接着干活；见下方说明）
+        PostToolUseFailure -> thinking  （同上；用户按 Esc 打断的除外）
+        Stop               -> done      （一轮回复正常结束）
+        StopFailure        -> error     （一轮回复因 API 错误异常终止）
+        SessionEnd         -> 删除状态文件（会话正常退出）
 
-    专门监听 PreToolUse 是为了修复"黄色卡死不变蓝"的问题：权限确认
-    （Notification/permission_prompt -> waiting）之后，用户在弹窗里点"允许"
-    并不会触发新的 UserPromptSubmit（这不是一轮新的用户输入，Claude 只是
-    接着跑当前这轮），所以旧版本没有任何 hook 事件把状态从 waiting 拉回
-    thinking，圆点就一直黄着，直到这一轮真正结束才因为 Stop 变绿——中间
-    "AI 正在继续工作"这段时间显示是错的。PreToolUse 在工具真正开始执行前
-    触发，权限批准后必然会走到这一步，用它当作"确实又开始干活了"的信号。
+    专门监听 PostToolUse 是为了修复"黄色卡死不变蓝"的问题：权限确认或
+    AskUserQuestion 提问（Notification -> waiting）之后，用户点"允许"或答完
+    问题并不会触发新的 UserPromptSubmit（这不是一轮新的用户输入，Claude 只是
+    接着跑当前这轮），没有任何 hook 事件把状态从 waiting 拉回 thinking，
+    圆点就一直黄着，直到这一轮真正结束才因为 Stop 变绿。
+    早期版本用的是 PreToolUse，但它的触发顺序是
+        PreToolUse -> 弹权限框(Notification) -> 用户批准 -> 工具执行 -> PostToolUse
+    PreToolUse 在弹框之前就已经跑完了，批准后不会再触发，根本修不了这个问题。
+    PostToolUse / PostToolUseFailure 在用户做完决定、工具跑完之后才触发，
+    才是"确实又开始干活了"的信号。PostToolUseFailure 带 is_interrupt=true
+    时是用户按 Esc 打断，这一轮已经停了，不能翻回 thinking。
 
     Notification 不是单一状态，得按 notification_type 细分——它的取值很杂，
     大部分根本不代表"需要用户处理"：
@@ -88,10 +99,12 @@ Write-DebugLog "invoked"
 
 $statusMap = @{
     'SessionStart'     = 'idle'
-    'UserPromptSubmit' = 'thinking'
-    'PreToolUse'       = 'thinking'
-    'Stop'             = 'done'
-    'StopFailure'      = 'error'
+    'UserPromptSubmit'   = 'thinking'
+    'PreToolUse'         = 'thinking'   # 旧版安装留下的配置，保留映射以免报未知事件
+    'PostToolUse'        = 'thinking'
+    'PostToolUseFailure' = 'thinking'
+    'Stop'               = 'done'
+    'StopFailure'        = 'error'
 }
 
 # Notification 需要按 notification_type 细分，不能整体归到一种状态——
@@ -113,7 +126,15 @@ function Get-OwnerProcessId {
         $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" `
                   -ErrorAction SilentlyContinue
         if (-not $parent) { return $currentId }
-        if ($parent.Name -notin $shellNames) { return [int]$parentId }
+        if ($parent.Name -notin $shellNames) {
+            # 后台会话（claude --bg）由 daemon 的 claude.exe --bg-pty-host 拉起，
+            # 会话进程的直接父进程也是 claude.exe；前台终端的父进程是 shell 或
+            # headroom 之类的包装器。
+            $grand = Get-CimInstance Win32_Process -Filter "ProcessId=$($parent.ParentProcessId)" `
+                     -ErrorAction SilentlyContinue
+            $script:isBackground = ($parent.Name -ieq 'claude.exe') -and $grand -and ($grand.Name -ieq 'claude.exe')
+            return [int]$parentId
+        }
         $currentId = [int]$parentId
     }
     return $currentId   # 找了 8 层还没找到就放弃，返回最后一层，好过没有
@@ -238,6 +259,10 @@ if ($Event -eq 'Notification') {
         Write-DebugLog "skip: notification_type=$notificationType (不改变状态)"
         exit 0
     }
+} elseif ($Event -eq 'PostToolUseFailure' -and $payload -and $payload.is_interrupt) {
+    # 用户按 Esc 打断工具：这一轮已经停了，不会再有 Stop，别翻回 thinking
+    Write-DebugLog "skip: PostToolUseFailure is_interrupt=true (不改变状态)"
+    exit 0
 } else {
     $status = $statusMap[$Event]
     if (-not $status) {
@@ -256,8 +281,17 @@ if (Test-Path $file) {
         if ($existing.pid) { $ownerPid = [int]$existing.pid }
     } catch {}
 }
+# 后台会话不需要用户操作，不上报（顺手清掉已经写出去的旧状态文件）。
+# 每次事件都要判断，所以这里总是走一遍进程树。
+$script:isBackground = $false
+$treeOwnerPid = Get-OwnerProcessId
+if ($script:isBackground) {
+    Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
+    Write-DebugLog "skip: background session owner_pid=$treeOwnerPid"
+    exit 0
+}
 if ($ownerPid -le 0) {
-    $ownerPid = Get-OwnerProcessId
+    $ownerPid = $treeOwnerPid
 }
 
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
